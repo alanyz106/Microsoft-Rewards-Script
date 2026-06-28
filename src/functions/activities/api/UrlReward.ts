@@ -1,4 +1,5 @@
 import type { AxiosRequestConfig } from 'axios'
+import type { Page } from 'patchright'
 import type { BasePromotion } from '../../../interface/DashboardData'
 import { Workers } from '../../Workers'
 
@@ -11,8 +12,14 @@ export class UrlReward extends Workers {
 
     private oldBalance: number = this.bot.userData.currentPoints
 
-    public async doUrlReward(promotion: BasePromotion) {
+    public async doUrlReward(promotion: BasePromotion, page?: Page) {
         if (!this.bot.requestToken && this.bot.rewardsVersion === 'legacy') {
+            // 当 requestToken 不可用时，尝试用浏览器直接导航到活动页面
+            if (page) {
+                await this.doUrlRewardBrowser(promotion, page)
+                return
+            }
+
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -21,6 +28,7 @@ export class UrlReward extends Workers {
             return
         }
 
+        // Fallback to API-based reward when requestToken is available
         const offerId = promotion.offerId
 
         this.bot.logger.info(
@@ -125,6 +133,76 @@ export class UrlReward extends Workers {
                 'URL-REWARD',
                 `Error in doUrlReward | offerId=${promotion.offerId} | message=${error instanceof Error ? error.message : String(error)}`
             )
+        }
+    }
+
+    /**
+     * Browser-based fallback: navigate to the activity URL instead of using the API.
+     * Used when RequestVerificationToken is not available (newer Rewards UI).
+     */
+    private async doUrlRewardBrowser(promotion: BasePromotion, page: Page) {
+        const offerId = promotion.offerId
+        this.oldBalance = Number(this.bot.userData.currentPoints ?? 0)
+
+        // Determine the URL to navigate to
+        const destinationUrl =
+            promotion.destinationUrl ||
+            (promotion.attributes as Record<string, any>)?.destination ||
+            ''
+
+        if (!destinationUrl) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD-BROWSER',
+                `No destination URL available | offerId=${offerId} | title="${promotion.title}"`
+            )
+            return
+        }
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'URL-REWARD-BROWSER',
+            `Navigating to activity | offerId=${offerId} | title="${promotion.title}" | url=${destinationUrl.slice(0, 200)}`
+        )
+
+        try {
+            // Navigate to the activity URL
+            await page.goto(destinationUrl, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
+
+            // Navigate back to rewards page
+            await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {})
+            await this.bot.utils.wait(3000)
+
+            // Check points
+            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            this.gainedPoints = newBalance - this.oldBalance
+
+            if (this.gainedPoints > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
+
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD-BROWSER',
+                    `Completed via browser | offerId=${offerId} | title="${promotion.title}" | gainedPoints=${this.gainedPoints} | newBalance=${newBalance}`,
+                    'green'
+                )
+            } else {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD-BROWSER',
+                    `No points gained via browser | offerId=${offerId} | title="${promotion.title}" | oldBalance=${this.oldBalance} | newBalance=${newBalance}`
+                )
+            }
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'URL-REWARD-BROWSER',
+                `Browser navigation error | offerId=${offerId} | title="${promotion.title}" | message=${error instanceof Error ? error.message : String(error)}`
+            )
+        } finally {
+            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
         }
     }
 }
