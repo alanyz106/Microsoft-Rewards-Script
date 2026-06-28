@@ -91,7 +91,14 @@ jobs:
           ACCOUNT_1_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_1_RECOVERY_EMAIL }}
           ACCOUNT_1_GEO_LOCALE: ${{ secrets.ACCOUNT_1_GEO_LOCALE }}
           ACCOUNT_1_LANG_CODE: ${{ secrets.ACCOUNT_1_LANG_CODE }}
-          # 如果有多个账号，按 ACCOUNT_2_*、ACCOUNT_3_* 规律添加
+
+          ACCOUNT_2_EMAIL: ${{ secrets.ACCOUNT_2_EMAIL }}
+          ACCOUNT_2_PASSWORD: ${{ secrets.ACCOUNT_2_PASSWORD }}
+          ACCOUNT_2_TOTP: ${{ secrets.ACCOUNT_2_TOTP }}
+          ACCOUNT_2_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_2_RECOVERY_EMAIL }}
+          ACCOUNT_2_GEO_LOCALE: ${{ secrets.ACCOUNT_2_GEO_LOCALE }}
+          ACCOUNT_2_LANG_CODE: ${{ secrets.ACCOUNT_2_LANG_CODE }}
+          # 如果有多个账号，按 ACCOUNT_3_*、ACCOUNT_4_* 规律添加
 
       - name: Create config.json
         run: |
