@@ -2,7 +2,6 @@ import chalk from 'chalk'
 import cluster from 'cluster'
 import { sendDiscord } from './Discord'
 import { sendNtfy } from './Ntfy'
-import { sendWxPusher } from './WxPusher'
 import type { MicrosoftRewardsBot } from '../index'
 import { errorDiagnostic } from '../util/ErrorDiagnostic'
 import type { LogFilter } from '../interface/Config'
@@ -134,10 +133,6 @@ export class Logger {
                 sendNtfy(config.webhook.ntfy, cleanMsg, level)
             }
 
-            if (config.webhook.wxpusher?.enabled) {
-                if (level === 'debug') return
-                sendWxPusher(config.webhook.wxpusher, cleanMsg, level)
-            }
         } else {
             process.send?.({ __ipcLog: { content: cleanMsg, level } })
         }

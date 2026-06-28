@@ -23,7 +23,8 @@ import type { Account } from './interface/Account'
 import AxiosClient from './util/Axios'
 import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
-import { sendWxPusher, flushWxPusherQueue } from './logging/WxPusher'
+import { sendWxPusherSummary, flushWxPusherQueue } from './logging/WxPusher'
+import type { AccountSummary } from './logging/WxPusher'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 
@@ -187,9 +188,6 @@ export class MicrosoftRewardsBot {
                     if (webhook.ntfy?.enabled && webhook.ntfy.url) {
                         sendNtfy(webhook.ntfy, content, level)
                     }
-                    if (webhook.wxpusher?.enabled) {
-                        sendWxPusher(webhook.wxpusher, content, level)
-                    }
                 }
             })
 
@@ -233,6 +231,19 @@ export class MicrosoftRewardsBot {
                     `Completed all accounts | Accounts processed: ${allAccountStats.length} | Total points collected: +${totalCollectedPoints} | Old total: ${totalInitialPoints} → New total: ${totalFinalPoints} | Total runtime: ${totalDurationMinutes}min`,
                     'green'
                 )
+
+                if (this.config.webhook.wxpusher?.enabled) {
+                    const summaries: AccountSummary[] = allAccountStats.map(s => ({
+                        email: s.email,
+                        collectedPoints: s.collectedPoints,
+                        initialPoints: s.initialPoints,
+                        finalPoints: s.finalPoints,
+                        duration: s.duration,
+                        success: s.success,
+                        error: s.error
+                    }))
+                    sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
+                }
 
                 await flushAllWebhooks()
 
@@ -377,6 +388,19 @@ export class MicrosoftRewardsBot {
                 `Completed all accounts | Accounts processed: ${accountStats.length} | Total points collected: +${totalCollectedPoints} | Old total: ${totalInitialPoints} → New total: ${totalFinalPoints} | Total runtime: ${totalDurationMinutes}min`,
                 'green'
             )
+
+            if (this.config.webhook.wxpusher?.enabled) {
+                const summaries: AccountSummary[] = accountStats.map(s => ({
+                    email: s.email,
+                    collectedPoints: s.collectedPoints,
+                    initialPoints: s.initialPoints,
+                    finalPoints: s.finalPoints,
+                    duration: s.duration,
+                    success: s.success,
+                    error: s.error
+                }))
+                sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
+            }
 
             await flushAllWebhooks()
             process.exit(0)
