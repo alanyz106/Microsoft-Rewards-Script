@@ -41,6 +41,14 @@ const WebhookSchema = z.object({
             priority: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional()
         })
         .optional(),
+    wxpusher: z
+        .object({
+            enabled: z.boolean(),
+            appToken: z.string(),
+            uids: z.array(z.string()),
+            contentType: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
+        })
+        .optional(),
     webhookLogFilter: LogFilterSchema
 })
 

@@ -23,6 +23,7 @@ import type { Account } from './interface/Account'
 import AxiosClient from './util/Axios'
 import { sendDiscord, flushDiscordQueue } from './logging/Discord'
 import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
+import { sendWxPusher, flushWxPusherQueue } from './logging/WxPusher'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 
@@ -57,7 +58,7 @@ export function getCurrentContext(): ExecutionContext {
 }
 
 async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
-    await Promise.allSettled([flushDiscordQueue(timeoutMs), flushNtfyQueue(timeoutMs)])
+    await Promise.allSettled([flushDiscordQueue(timeoutMs), flushNtfyQueue(timeoutMs), flushWxPusherQueue(timeoutMs)])
 }
 
 interface UserData {
@@ -185,6 +186,9 @@ export class MicrosoftRewardsBot {
                     }
                     if (webhook.ntfy?.enabled && webhook.ntfy.url) {
                         sendNtfy(webhook.ntfy, content, level)
+                    }
+                    if (webhook.wxpusher?.enabled) {
+                        sendWxPusher(webhook.wxpusher, content, level)
                     }
                 }
             })

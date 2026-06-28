@@ -95,56 +95,60 @@ jobs:
 
       - name: Create config.json
         run: |
-          cat > src/config.json << 'CFGEOF'
-          {
-            "baseURL": "https://rewards.bing.com",
-            "sessionPath": "sessions",
-            "headless": true,
-            "clusters": 1,
-            "globalTimeout": "30sec",
-            "errorDiagnostics": false,
-            "ensureStreakProtection": true,
-            "workers": {
-              "doDailySet": true,
-              "doClaimBonusPoints": true,
-              "doSpecialPromotions": true,
-              "doMorePromotions": true,
-              "doPunchCards": true,
-              "doAppPromotions": true,
-              "doDesktopSearch": true,
-              "doMobileSearch": true,
-              "doDailyCheckIn": true,
-              "doReadToEarn": true
+          node -e "
+          const cfg = {
+            baseURL: 'https://rewards.bing.com',
+            sessionPath: 'sessions',
+            headless: true, clusters: 1,
+            globalTimeout: '30sec', errorDiagnostics: false,
+            ensureStreakProtection: true,
+            workers: {
+              doDailySet: true, doClaimBonusPoints: true,
+              doSpecialPromotions: true, doMorePromotions: true,
+              doPunchCards: true, doAppPromotions: true,
+              doDesktopSearch: true, doMobileSearch: true,
+              doDailyCheckIn: true, doReadToEarn: true
             },
-            "searchOnBingLocalQueries": false,
-            "searchSettings": {
-              "scrollRandomResults": false,
-              "clickRandomResults": false,
-              "parallelSearching": true,
-              "queryEngines": ["google", "wikipedia", "reddit", "local"],
-              "searchResultVisitTime": "10sec",
-              "searchDelay": { "min": "30sec", "max": "1min" },
-              "readDelay": { "min": "30sec", "max": "1min" }
+            searchOnBingLocalQueries: false,
+            searchSettings: {
+              scrollRandomResults: false, clickRandomResults: false,
+              parallelSearching: true,
+              queryEngines: ['google', 'wikipedia', 'reddit', 'local'],
+              searchResultVisitTime: '10sec',
+              searchDelay: { min: '30sec', max: '1min' },
+              readDelay: { min: '30sec', max: '1min' }
             },
-            "debugLogs": false,
-            "proxy": { "queryEngine": true },
-            "webhook": {
-              "discord": {
-                "enabled": ${{ secrets.DISCORD_ENABLED == 'true' && 'true' || 'false' }},
-                "url": "${{ secrets.DISCORD_WEBHOOK_URL }}"
+            debugLogs: false,
+            proxy: { queryEngine: true },
+            webhook: {
+              discord: {
+                enabled: ${{ secrets.DISCORD_ENABLED == 'true'}},
+                url: '${{ secrets.DISCORD_WEBHOOK_URL }}'
               },
-              "ntfy": {
-                "enabled": ${{ secrets.NTFY_ENABLED == 'true' && 'true' || 'false' }},
-                "url": "${{ secrets.NTFY_URL }}",
-                "topic": "${{ secrets.NTFY_TOPIC }}",
-                "token": "${{ secrets.NTFY_TOKEN }}",
-                "title": "Microsoft-Rewards-Script",
-                "tags": ["bot", "notify"],
-                "priority": 3
+              ntfy: {
+                enabled: ${{ secrets.NTFY_ENABLED == 'true'}},
+                url: '${{ secrets.NTFY_URL }}',
+                topic: '${{ secrets.NTFY_TOPIC }}',
+                token: '${{ secrets.NTFY_TOKEN }}',
+                title: 'Microsoft-Rewards-Script',
+                tags: ['bot', 'notify'], priority: 3
+              },
+              wxpusher: {
+                enabled: ${{ secrets.WXPUSHER_ENABLED == 'true'}},
+                appToken: '${{ secrets.WXPUSHER_APPTOKEN }}',
+                uids: '${{ secrets.WXPUSHER_UIDS }}'.split(',').filter(Boolean),
+                contentType: 1
+              },
+              webhookLogFilter: {
+                enabled: false, mode: 'whitelist',
+                levels: ['error'],
+                keywords: ['starting account', 'select number', 'collected'],
+                regexPatterns: []
               }
             }
-          }
-          CFGEOF
+          };
+          require('fs').writeFileSync('src/config.json', JSON.stringify(cfg, null, 2));
+          "
 
       - name: Build
         run: npx tsc

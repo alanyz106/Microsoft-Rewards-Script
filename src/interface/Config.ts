@@ -53,6 +53,7 @@ export interface ConfigWorkers {
 export interface ConfigWebhook {
     discord?: WebhookDiscordConfig
     ntfy?: WebhookNtfyConfig
+    wxpusher?: WebhookWxPusherConfig
     webhookLogFilter: LogFilter
 }
 
@@ -77,4 +78,11 @@ export interface WebhookNtfyConfig {
     title?: string
     tags?: string[]
     priority?: 1 | 2 | 3 | 4 | 5 // 5 highest (important)
+}
+
+export interface WebhookWxPusherConfig {
+    enabled: boolean
+    appToken: string
+    uids: string[]
+    contentType?: 1 | 2 | 3 // 1=文本, 2=HTML, 3=Markdown
 }
