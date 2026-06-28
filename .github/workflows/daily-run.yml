@@ -62,7 +62,18 @@ jobs:
               totpSecret: process.env['ACCOUNT_' + i + '_TOTP'] || '',
               recoveryEmail: process.env['ACCOUNT_' + i + '_RECOVERY_EMAIL'] || '',
               geoLocale: process.env['ACCOUNT_' + i + '_GEO_LOCALE'] || 'auto',
-              langCode: process.env['ACCOUNT_' + i + '_LANG_CODE'] || 'en'
+              langCode: process.env['ACCOUNT_' + i + '_LANG_CODE'] || 'en',
+              proxy: {
+                proxyAxios: false,
+                url: '',
+                port: 0,
+                username: '',
+                password: ''
+              },
+              saveFingerprint: {
+                mobile: true,
+                desktop: true
+              }
             });
             i++;
           }
