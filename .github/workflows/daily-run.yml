@@ -1,0 +1,142 @@
+name: Daily Rewards
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 每天 UTC 7:00（北京时间 15:00）
+  workflow_dispatch:        # 支持手动触发
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-npm
+        with:
+          path: node_modules
+          key: npm-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: cache-browsers
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache sessions
+        uses: actions/cache@v4
+        id: cache-sessions
+        with:
+          path: dist/browser/sessions
+          key: sessions-${{ github.run_id }}
+          restore-keys: sessions-
+
+      - name: Install dependencies
+        if: steps.cache-npm.outputs.cache-hit != 'true'
+        run: npm install
+
+      - name: Install Chromium
+        if: steps.cache-browsers.outputs.cache-hit != 'true'
+        run: npx patchright install chromium
+
+      - name: Create accounts.json
+        run: |
+          node -e "
+          const accounts = [];
+          let i = 1;
+          while (process.env['ACCOUNT_' + i + '_EMAIL']) {
+            accounts.push({
+              email: process.env['ACCOUNT_' + i + '_EMAIL'],
+              password: process.env['ACCOUNT_' + i + '_PASSWORD'],
+              totpSecret: process.env['ACCOUNT_' + i + '_TOTP'] || '',
+              recoveryEmail: process.env['ACCOUNT_' + i + '_RECOVERY_EMAIL'] || '',
+              geoLocale: process.env['ACCOUNT_' + i + '_GEO_LOCALE'] || 'auto',
+              langCode: process.env['ACCOUNT_' + i + '_LANG_CODE'] || 'en'
+            });
+            i++;
+          }
+          if (accounts.length === 0) {
+            console.error('No accounts found. Set ACCOUNT_1_EMAIL and ACCOUNT_1_PASSWORD secrets.');
+            process.exit(1);
+          }
+          console.log('Found ' + accounts.length + ' account(s)');
+          require('fs').writeFileSync('src/accounts.json', JSON.stringify(accounts, null, 2));
+          "
+        env:
+          ACCOUNT_1_EMAIL: ${{ secrets.ACCOUNT_1_EMAIL }}
+          ACCOUNT_1_PASSWORD: ${{ secrets.ACCOUNT_1_PASSWORD }}
+          ACCOUNT_1_TOTP: ${{ secrets.ACCOUNT_1_TOTP }}
+          ACCOUNT_1_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_1_RECOVERY_EMAIL }}
+          ACCOUNT_1_GEO_LOCALE: ${{ secrets.ACCOUNT_1_GEO_LOCALE }}
+          ACCOUNT_1_LANG_CODE: ${{ secrets.ACCOUNT_1_LANG_CODE }}
+          # 如果有多个账号，按 ACCOUNT_2_*、ACCOUNT_3_* 规律添加
+
+      - name: Create config.json
+        run: |
+          cat > src/config.json << 'CFGEOF'
+          {
+            "baseURL": "https://rewards.bing.com",
+            "sessionPath": "sessions",
+            "headless": true,
+            "clusters": 1,
+            "globalTimeout": "30sec",
+            "errorDiagnostics": false,
+            "ensureStreakProtection": true,
+            "workers": {
+              "doDailySet": true,
+              "doClaimBonusPoints": true,
+              "doSpecialPromotions": true,
+              "doMorePromotions": true,
+              "doPunchCards": true,
+              "doAppPromotions": true,
+              "doDesktopSearch": true,
+              "doMobileSearch": true,
+              "doDailyCheckIn": true,
+              "doReadToEarn": true
+            },
+            "searchOnBingLocalQueries": false,
+            "searchSettings": {
+              "scrollRandomResults": false,
+              "clickRandomResults": false,
+              "parallelSearching": true,
+              "queryEngines": ["google", "wikipedia", "reddit", "local"],
+              "searchResultVisitTime": "10sec",
+              "searchDelay": { "min": "30sec", "max": "1min" },
+              "readDelay": { "min": "30sec", "max": "1min" }
+            },
+            "debugLogs": false,
+            "proxy": { "queryEngine": true },
+            "webhook": {
+              "discord": {
+                "enabled": ${{ secrets.DISCORD_ENABLED == 'true' && 'true' || 'false' }},
+                "url": "${{ secrets.DISCORD_WEBHOOK_URL }}"
+              },
+              "ntfy": {
+                "enabled": ${{ secrets.NTFY_ENABLED == 'true' && 'true' || 'false' }},
+                "url": "${{ secrets.NTFY_URL }}",
+                "topic": "${{ secrets.NTFY_TOPIC }}",
+                "token": "${{ secrets.NTFY_TOKEN }}",
+                "title": "Microsoft-Rewards-Script",
+                "tags": ["bot", "notify"],
+                "priority": 3
+              }
+            }
+          }
+          CFGEOF
+
+      - name: Build
+        run: npx tsc
+
+      - name: Run
+        run: node ./dist/index.js
