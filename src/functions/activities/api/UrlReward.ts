@@ -137,8 +137,8 @@ export class UrlReward extends Workers {
     }
 
     /**
-     * Browser-based fallback: navigate to the activity URL instead of using the API.
-     * Used when RequestVerificationToken is not available (newer Rewards UI).
+     * Browser-based fallback: click the activity link on the Rewards dashboard to trigger the RSC action.
+     * Used when RequestVerificationToken is not available (Chinese/Next.js dashboard).
      */
     private async doUrlRewardBrowser(promotion: BasePromotion, page: Page) {
         const offerId = promotion.offerId
@@ -159,22 +159,42 @@ export class UrlReward extends Workers {
             return
         }
 
+        // Extract the form parameter from the destination URL to use as a unique selector
+        const formMatch = destinationUrl.match(/[?&]form=([^&]+)/)
+        const formParam = formMatch ? formMatch[1] : null
+
         this.bot.logger.info(
             this.bot.isMobile,
             'URL-REWARD-BROWSER',
-            `Navigating to activity | offerId=${offerId} | title="${promotion.title}" | url=${destinationUrl.slice(0, 200)}`
+            `Clicking activity on dashboard | offerId=${offerId} | title="${promotion.title}" | form=${formParam ?? 'none'}`
         )
 
         try {
-            // Navigate to the activity URL
-            await page.goto(destinationUrl, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+            if (formParam) {
+                // Find the link by its unique form parameter and click it
+                const link = page.locator(`a[href*="${formParam}"]`).first()
+                await link.click({ timeout: 15000 })
+            } else {
+                // Fallback: try to find by a portion of the query string
+                const queryPart = destinationUrl.split('?')[1]?.slice(0, 50)
+                if (queryPart) {
+                    const link = page.locator(`a[href*="${queryPart}"]`).first()
+                    await link.click({ timeout: 15000 })
+                } else {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'URL-REWARD-BROWSER',
+                        `No form param or query string to match | offerId=${offerId}`
+                    )
+                    return
+                }
+            }
+
+            // Wait for the RSC action to process on the server
             await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
 
-            // Navigate back to rewards page
-            await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {})
-            await this.bot.utils.wait(3000)
-
-            // Check points
+            // Check points — the page stays on the dashboard (SPA behavior),
+            // getCurrentPoints() fetches fresh data from the API
             const newBalance = await this.bot.browser.func.getCurrentPoints()
             this.gainedPoints = newBalance - this.oldBalance
 
@@ -185,22 +205,63 @@ export class UrlReward extends Workers {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'URL-REWARD-BROWSER',
-                    `Completed via browser | offerId=${offerId} | title="${promotion.title}" | gainedPoints=${this.gainedPoints} | newBalance=${newBalance}`,
+                    `Completed via dashboard click | offerId=${offerId} | title="${promotion.title}" | gainedPoints=${this.gainedPoints} | newBalance=${newBalance}`,
                     'green'
                 )
             } else {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'URL-REWARD-BROWSER',
-                    `No points gained via browser | offerId=${offerId} | title="${promotion.title}" | oldBalance=${this.oldBalance} | newBalance=${newBalance}`
+                    `No points gained via dashboard click | offerId=${offerId} | title="${promotion.title}" | oldBalance=${this.oldBalance} | newBalance=${newBalance}`
                 )
             }
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'URL-REWARD-BROWSER',
-                `Browser navigation error | offerId=${offerId} | title="${promotion.title}" | message=${error instanceof Error ? error.message : String(error)}`
+                `Dashboard click error | offerId=${offerId} | title="${promotion.title}" | message=${error instanceof Error ? error.message : String(error)}`
             )
+
+            // Fallback: try direct navigation to the destination URL
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'URL-REWARD-BROWSER',
+                `Falling back to direct navigation | offerId=${offerId}`
+            )
+
+            try {
+                await page.goto(destinationUrl, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
+                await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {})
+                await this.bot.utils.wait(3000)
+
+                const newBalance = await this.bot.browser.func.getCurrentPoints()
+                this.gainedPoints = newBalance - this.oldBalance
+
+                if (this.gainedPoints > 0) {
+                    this.bot.userData.currentPoints = newBalance
+                    this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
+
+                    this.bot.logger.info(
+                        this.bot.isMobile,
+                        'URL-REWARD-BROWSER',
+                        `Completed via fallback navigation | offerId=${offerId} | title="${promotion.title}" | gainedPoints=${this.gainedPoints} | newBalance=${newBalance}`,
+                        'green'
+                    )
+                } else {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'URL-REWARD-BROWSER',
+                        `No points gained via fallback navigation | offerId=${offerId} | title="${promotion.title}" | oldBalance=${this.oldBalance} | newBalance=${newBalance}`
+                    )
+                }
+            } catch (fallbackError) {
+                this.bot.logger.error(
+                    this.bot.isMobile,
+                    'URL-REWARD-BROWSER',
+                    `Fallback navigation also failed | offerId=${offerId} | title="${promotion.title}" | message=${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                )
+            }
         } finally {
             await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
         }
