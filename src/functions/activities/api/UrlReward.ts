@@ -137,64 +137,68 @@ export class UrlReward extends Workers {
     }
 
     /**
-     * Browser-based fallback: click the activity link on the Rewards dashboard to trigger the RSC action.
-     * Used when RequestVerificationToken is not available (Chinese/Next.js dashboard).
+     * Browser-based fallback: click uncompleted activity links on the Rewards page
+     * to trigger the RSC action. Used when RequestVerificationToken is not available
+     * (Chinese/Next.js dashboard).
      */
     private async doUrlRewardBrowser(promotion: BasePromotion, page: Page) {
         const offerId = promotion.offerId
         this.oldBalance = Number(this.bot.userData.currentPoints ?? 0)
 
-        // Determine the URL to navigate to
-        const destinationUrl =
-            promotion.destinationUrl ||
-            (promotion.attributes as Record<string, any>)?.destination ||
-            ''
-
-        if (!destinationUrl) {
-            this.bot.logger.warn(
-                this.bot.isMobile,
-                'URL-REWARD-BROWSER',
-                `No destination URL available | offerId=${offerId} | title="${promotion.title}"`
-            )
-            return
-        }
-
-        // Extract the form parameter from the destination URL to use as a unique selector
-        const formMatch = destinationUrl.match(/[?&]form=([^&]+)/)
-        const formParam = formMatch ? formMatch[1] : null
-
         this.bot.logger.info(
             this.bot.isMobile,
             'URL-REWARD-BROWSER',
-            `Clicking activity on dashboard | offerId=${offerId} | title="${promotion.title}" | form=${formParam ?? 'none'}`
+            `Looking for uncompleted activities on current page | offerId=${offerId} | title="${promotion.title}"`
         )
 
         try {
-            if (formParam) {
-                // Find the link by its unique form parameter and click it
-                const link = page.locator(`a[href*="${formParam}"]`).first()
-                await link.click({ timeout: 15000 })
-            } else {
-                // Fallback: try to find by a portion of the query string
-                const queryPart = destinationUrl.split('?')[1]?.slice(0, 50)
-                if (queryPart) {
-                    const link = page.locator(`a[href*="${queryPart}"]`).first()
-                    await link.click({ timeout: 15000 })
-                } else {
-                    this.bot.logger.warn(
+            // Find all uncompleted activity links on the current page
+            // These are <a> tags pointing to Bing search with rewards tracking,
+            // showing "+N" text (uncompleted) rather than "已完成" (completed)
+            const activityLinks = page.locator('a[href*="PUBL=RewardsDO"]')
+            const linkCount = await activityLinks.count()
+
+            if (linkCount === 0) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD-BROWSER',
+                    `No activity links found on current page | offerId=${offerId}`
+                )
+                return
+            }
+
+            let clicked = false
+            for (let i = 0; i < linkCount; i++) {
+                const link = activityLinks.nth(i)
+                const linkText = await link.innerText()
+
+                // Only click links that are not yet completed
+                if (!linkText.includes('已完成')) {
+                    this.bot.logger.info(
                         this.bot.isMobile,
                         'URL-REWARD-BROWSER',
-                        `No form param or query string to match | offerId=${offerId}`
+                        `Clicking activity link | offerId=${offerId} | text="${linkText.trim().slice(0, 80)}"`
                     )
-                    return
+
+                    await link.click({ timeout: 15000 })
+                    clicked = true
+                    break
                 }
+            }
+
+            if (!clicked) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD-BROWSER',
+                    `All activity links already completed on current page | offerId=${offerId}`
+                )
+                return
             }
 
             // Wait for the RSC action to process on the server
             await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
 
-            // Check points — the page stays on the dashboard (SPA behavior),
-            // getCurrentPoints() fetches fresh data from the API
+            // Check points
             const newBalance = await this.bot.browser.func.getCurrentPoints()
             this.gainedPoints = newBalance - this.oldBalance
 
@@ -222,7 +226,14 @@ export class UrlReward extends Workers {
                 `Dashboard click error | offerId=${offerId} | title="${promotion.title}" | message=${error instanceof Error ? error.message : String(error)}`
             )
 
-            // Fallback: try direct navigation to the destination URL
+            // Fallback: navigate to the destination URL directly
+            const destinationUrl =
+                promotion.destinationUrl ||
+                (promotion.attributes as Record<string, any>)?.destination ||
+                ''
+
+            if (!destinationUrl) return
+
             this.bot.logger.info(
                 this.bot.isMobile,
                 'URL-REWARD-BROWSER',
@@ -245,21 +256,15 @@ export class UrlReward extends Workers {
                     this.bot.logger.info(
                         this.bot.isMobile,
                         'URL-REWARD-BROWSER',
-                        `Completed via fallback navigation | offerId=${offerId} | title="${promotion.title}" | gainedPoints=${this.gainedPoints} | newBalance=${newBalance}`,
+                        `Completed via fallback navigation | offerId=${offerId} | gainedPoints=${this.gainedPoints}`,
                         'green'
-                    )
-                } else {
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        'URL-REWARD-BROWSER',
-                        `No points gained via fallback navigation | offerId=${offerId} | title="${promotion.title}" | oldBalance=${this.oldBalance} | newBalance=${newBalance}`
                     )
                 }
             } catch (fallbackError) {
                 this.bot.logger.error(
                     this.bot.isMobile,
                     'URL-REWARD-BROWSER',
-                    `Fallback navigation also failed | offerId=${offerId} | title="${promotion.title}" | message=${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                    `Fallback navigation also failed | offerId=${offerId} | message=${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
                 )
             }
         } finally {

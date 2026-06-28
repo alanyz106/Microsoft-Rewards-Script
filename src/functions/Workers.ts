@@ -68,6 +68,11 @@ export class Workers {
             `Started solving ${activitiesUncompleted.length} "More Promotions" items`
         )
 
+        // Navigate to the earn page so activity links are present in the DOM for clicking
+        this.bot.logger.info(this.bot.isMobile, 'MORE-PROMOTIONS', 'Navigating to /earn page')
+        await page.goto('https://rewards.bing.com/earn', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {})
+        await this.bot.utils.wait(3000)
+
         await this.solveActivities(activitiesUncompleted, page)
 
         this.bot.logger.info(this.bot.isMobile, 'MORE-PROMOTIONS', 'All "More Promotion" items have been completed')
