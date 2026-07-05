@@ -12,6 +12,9 @@ export class UrlReward extends Workers {
 
     private oldBalance: number = this.bot.userData.currentPoints
 
+    /** Track PUBL hrefs already clicked in this session to avoid re-clicking the same link */
+    private publClickedHrefs: Set<string> = new Set()
+
     public async doUrlReward(promotion: BasePromotion, page?: Page) {
         if (!this.bot.requestToken && this.bot.rewardsVersion === 'legacy') {
             // 当 requestToken 不可用时，尝试用浏览器直接导航到活动页面
@@ -184,49 +187,86 @@ export class UrlReward extends Workers {
             const linkCount = await activityLinks.count()
 
             if (linkCount > 0) {
+                // Strategy: first try to find a link whose text matches the promotion title
                 let clicked = false
+                let titleMatchedIndex = -1
+
                 for (let i = 0; i < linkCount; i++) {
                     const link = activityLinks.nth(i)
-                    const linkText = await link.innerText()
+                    const linkText = (await link.innerText()).trim().toLowerCase()
+                    const titleText = (promotion.title ?? '').toLowerCase()
 
-                    if (!linkText.includes('已完成')) {
-                        this.bot.logger.info(
+                    if (titleText && linkText.includes(titleText)) {
+                        titleMatchedIndex = i
+                        break
+                    }
+                }
+
+                // If title match found, try that link first; otherwise try all links (skipping already-clicked)
+                const searchOrder = titleMatchedIndex >= 0
+                    ? [titleMatchedIndex, ...Array.from({ length: linkCount }, (_, i) => i).filter(i => i !== titleMatchedIndex)]
+                    : Array.from({ length: linkCount }, (_, i) => i)
+
+                for (const i of searchOrder) {
+                    if (clicked) break
+
+                    const link = activityLinks.nth(i)
+                    const href = await link.getAttribute('href')
+                    const linkText = (await link.innerText()).trim()
+
+                    // Skip links already clicked in this session
+                    if (href && this.publClickedHrefs.has(href)) {
+                        this.bot.logger.debug(
                             this.bot.isMobile,
                             'URL-REWARD-BROWSER',
-                            `Attempting PUBL click | offerId=${offerId} | text="${linkText.trim().slice(0, 80)}"`
+                            `Skipping already-clicked PUBL link | offerId=${offerId} | href=${href.slice(0, 80)}`
+                        )
+                        continue
+                    }
+
+                    // Skip links explicitly marked as completed
+                    if (linkText.includes('已完成')) {
+                        continue
+                    }
+
+                    this.bot.logger.info(
+                        this.bot.isMobile,
+                        'URL-REWARD-BROWSER',
+                        `Attempting PUBL click | offerId=${offerId} | text="${linkText.slice(0, 80)}"`
+                    )
+
+                    try {
+                        await link.click({ timeout: 5000 })
+                        clicked = true
+                        if (href) this.publClickedHrefs.add(href)
+                        break
+                    } catch (clickError) {
+                        // Playwright click failed (element not visible on mobile).
+                        // Try programmatic click via evaluate as fallback
+                        this.bot.logger.debug(
+                            this.bot.isMobile,
+                            'URL-REWARD-BROWSER',
+                            `PUBL click timeout, trying evaluate click | offerId=${offerId}`
                         )
 
                         try {
-                            await link.click({ timeout: 5000 })
-                            clicked = true
-                            break
-                        } catch (clickError) {
-                            // Playwright click failed (element not visible on mobile).
-                            // Try programmatic click via evaluate as fallback
+                            const href = await link.getAttribute('href')
+                            if (href) {
+                                await page.evaluate((url) => {
+                                    window.location.href = url
+                                }, href)
+                                clicked = true
+                                this.publClickedHrefs.add(href)
+                                break
+                            }
+                        } catch (evalError) {
                             this.bot.logger.debug(
                                 this.bot.isMobile,
                                 'URL-REWARD-BROWSER',
-                                `PUBL click timeout, trying evaluate click | offerId=${offerId}`
+                                `Evaluate click also failed | offerId=${offerId} | message=${evalError instanceof Error ? evalError.message : String(evalError)}`
                             )
-
-                            try {
-                                const href = await link.getAttribute('href')
-                                if (href) {
-                                    await page.evaluate((url) => {
-                                        window.location.href = url
-                                    }, href)
-                                    clicked = true
-                                    break
-                                }
-                            } catch (evalError) {
-                                this.bot.logger.debug(
-                                    this.bot.isMobile,
-                                    'URL-REWARD-BROWSER',
-                                    `Evaluate click also failed | offerId=${offerId} | message=${evalError instanceof Error ? evalError.message : String(evalError)}`
-                                )
-                            }
-                            break // Exit loop, fall back to direct navigation
                         }
+                        break // Exit loop, fall back to direct navigation
                     }
                 }
 
