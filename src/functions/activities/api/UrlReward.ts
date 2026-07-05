@@ -186,9 +186,10 @@ export class UrlReward extends Workers {
             const activityLinks = page.locator('a[href*="PUBL=RewardsDO"]')
             const linkCount = await activityLinks.count()
 
+            let clicked = false
+
             if (linkCount > 0) {
                 // Strategy: first try to find a link whose text matches the promotion title
-                let clicked = false
                 let titleMatchedIndex = -1
 
                 for (let i = 0; i < linkCount; i++) {
@@ -304,7 +305,47 @@ export class UrlReward extends Workers {
                 )
             }
 
-            // Second try: navigate directly to the destination URL
+            // Second try: non-PUBL links in the #dailyset section
+            // (new dashboard may render some activities as regular <a> tags without PUBL parameter)
+            if (!clicked && promotion.title) {
+                const dailySetLinks = page.locator('#dailyset a')
+                const dailySetCount = await dailySetLinks.count()
+
+                if (dailySetCount > 0) {
+                    const titleLower = promotion.title.toLowerCase()
+
+                    for (let i = 0; i < dailySetCount; i++) {
+                        const link = dailySetLinks.nth(i)
+                        const href = await link.getAttribute('href')
+
+                        // Skip PUBL links (already tried above)
+                        if (href?.includes('PUBL=RewardsDO')) continue
+                        // Skip links already clicked in this session
+                        if (href && this.publClickedHrefs.has(href)) continue
+
+                        const linkText = (await link.innerText()).trim().toLowerCase()
+
+                        if (titleLower && linkText.includes(titleLower)) {
+                            this.bot.logger.info(
+                                this.bot.isMobile,
+                                'URL-REWARD-BROWSER',
+                                `Found matching non-PUBL link in dailyset | offerId=${offerId} | text="${linkText.slice(0, 80)}"`
+                            )
+
+                            try {
+                                await link.click({ timeout: 5000 })
+                                clicked = true
+                                if (href) this.publClickedHrefs.add(href)
+                                break
+                            } catch {
+                                // Click failed, fall through to destinationUrl
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Third try: navigate directly to the destination URL
             if (!destinationUrl) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
