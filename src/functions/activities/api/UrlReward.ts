@@ -307,7 +307,13 @@ export class UrlReward extends Workers {
 
             // Second try: non-PUBL links in the #dailyset section
             // (new dashboard may render some activities as regular <a> tags without PUBL parameter)
-            if (!clicked && promotion.title) {
+            if (this.gainedPoints <= 0 && promotion.title) {
+                // Navigate back to dashboard first (PUBL click may have navigated away)
+                if (!page.url().includes('rewards.bing.com')) {
+                    await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {})
+                    await this.bot.utils.wait(3000)
+                }
+
                 const dailySetLinks = page.locator('#dailyset a')
                 const dailySetCount = await dailySetLinks.count()
 
@@ -343,7 +349,35 @@ export class UrlReward extends Workers {
                         }
                     }
                 }
+
+                // Check points after clicking the non-PUBL link
+                if (clicked) {
+                    await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
+                    const newBalance = await this.bot.browser.func.getCurrentPoints()
+                    this.gainedPoints = newBalance - this.oldBalance
+
+                    if (this.gainedPoints > 0) {
+                        this.bot.userData.currentPoints = newBalance
+                        this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
+
+                        this.bot.logger.info(
+                            this.bot.isMobile,
+                            'URL-REWARD-BROWSER',
+                            `Completed via non-PUBL link click | offerId=${offerId} | title="${promotion.title}" | gainedPoints=${this.gainedPoints} | newBalance=${newBalance}`,
+                            'green'
+                        )
+                        return
+                    }
+
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'URL-REWARD-BROWSER',
+                        `No points gained via non-PUBL link click | offerId=${offerId} | title="${promotion.title}"`
+                    )
+                }
             }
+
+            // Third try: navigate directly to the destination URL
 
             // Third try: navigate directly to the destination URL
             if (!destinationUrl) {
