@@ -2,7 +2,7 @@ name: Daily Rewards
 
 on:
   schedule:
-    - cron: '0 7 * * *'   # 每天 UTC 7:00（北京时间 15:00）
+    - cron: '0 0 * * *'   # 每天 UTC 0:00（北京时间 8:00）
   workflow_dispatch:        # 支持手动触发
 
 env:
@@ -125,7 +125,7 @@ jobs:
               searchDelay: { min: '30sec', max: '1min' },
               readDelay: { min: '30sec', max: '1min' }
             },
-            debugLogs: true,
+            debugLogs: false,
             proxy: { queryEngine: true },
             webhook: {
               discord: {
