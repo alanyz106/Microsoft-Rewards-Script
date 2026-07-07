@@ -125,7 +125,7 @@ jobs:
               searchDelay: { min: '30sec', max: '1min' },
               readDelay: { min: '30sec', max: '1min' }
             },
-            debugLogs: false,
+            debugLogs: true,
             proxy: { queryEngine: true },
             webhook: {
               discord: {
