@@ -79,6 +79,7 @@ export interface ConfigWebhook {
     discord?: WebhookDiscordConfig
     ntfy?: WebhookNtfyConfig
     telegram?: WebhookTelegramConfig
+    wxpusher?: WebhookWxPusherConfig
     webhookLogFilter: LogFilter
 }
 
@@ -110,3 +111,11 @@ export interface WebhookTelegramConfig {
     botToken: string
     chatId: string | number
 }
+
+export interface WebhookWxPusherConfig {
+    enabled?: boolean
+    appToken: string
+    uids: string[]
+    contentType?: 1 | 2 | 3 // 1=文本, 2=HTML, 3=Markdown
+}
+

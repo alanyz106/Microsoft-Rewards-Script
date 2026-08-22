@@ -1,0 +1,171 @@
+name: Daily Rewards
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 每天 UTC 0:00（北京时间 8:00）
+  workflow_dispatch:        # 支持手动触发
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-npm
+        with:
+          path: node_modules
+          key: npm-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: cache-browsers
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache sessions
+        uses: actions/cache@v4
+        id: cache-sessions
+        with:
+          path: sessions
+          key: sessions-${{ github.run_id }}
+          restore-keys: sessions-
+
+      - name: Install dependencies
+        if: steps.cache-npm.outputs.cache-hit != 'true'
+        run: npm install
+
+      - name: Install Chromium
+        if: steps.cache-browsers.outputs.cache-hit != 'true'
+        run: npx patchright install chromium
+
+      - name: Create config.json
+        run: |
+          node -e "
+          const cfg = {
+            sessionPath: 'sessions',
+            headless: true,
+            clusters: 1,
+            errorDiagnostics: false,
+            ensureStreakProtection: true,
+            autoClaimPunchcardRewards: false,
+            contintueOnBotWarning: false,
+            skipNonPointTasks: true,
+            accountDelay: { min: '1min', max: '3min' },
+            workers: {
+              doDailySet: true,
+              doClaimBonusPoints: true,
+              doMorePromotions: true,
+              doPunchCards: true,
+              doAppPromotions: true,
+              doDesktopSearch: true,
+              doMobileSearch: true,
+              doBonusSearches: false,
+              doDailyCheckIn: true,
+              doReadToEarn: true,
+              doActivateSearchPerk: true,
+              doVisualSearch: false
+            },
+            activities: {
+              urlReward: true,
+              searchOnBing: true
+            },
+            searchOnBingLocalQueries: false,
+            globalTimeout: '30sec',
+            searchSettings: {
+              scrollRandomResults: false,
+              clickRandomResults: false,
+              runOnZeroPoints: false,
+              maxBonusSearches: 110,
+              parallelSearching: true,
+              clusterSearch: true,
+              queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local'],
+              searchResultVisitTime: '10sec',
+              searchDelay: { min: '30sec', max: '1min' },
+              readDelay: { min: '30sec', max: '1min' }
+            },
+            experimental: {
+              apiSearch: false,
+              apiSearchOnBing: false,
+              blockMedia: false,
+              edgeBrowsing: false
+            },
+            debugLogs: false,
+            proxy: {
+              queryEngine: true,
+              ignoreCertificateErrors: false
+            },
+            webhook: {
+              discord: {
+                enabled: ${{ secrets.DISCORD_ENABLED == 'true' }},
+                url: '${{ secrets.DISCORD_WEBHOOK_URL }}'
+              },
+              telegram: {
+                enabled: ${{ secrets.TELEGRAM_ENABLED == 'true' }},
+                botToken: '${{ secrets.TELEGRAM_BOT_TOKEN }}',
+                chatId: '${{ secrets.TELEGRAM_CHAT_ID }}'
+              },
+              ntfy: {
+                enabled: ${{ secrets.NTFY_ENABLED == 'true' }},
+                url: '${{ secrets.NTFY_URL }}',
+                topic: '${{ secrets.NTFY_TOPIC }}',
+                token: '${{ secrets.NTFY_TOKEN }}',
+                title: 'Microsoft-Rewards-Script',
+                tags: ['bot', 'notify'],
+                priority: 3
+              },
+              wxpusher: {
+                enabled: ${{ secrets.WXPUSHER_ENABLED == 'true' }},
+                appToken: '${{ secrets.WXPUSHER_APPTOKEN }}',
+                uids: '${{ secrets.WXPUSHER_UIDS }}'.split(',').filter(Boolean),
+                contentType: 2
+              },
+              webhookLogFilter: {
+                enabled: false,
+                mode: 'whitelist',
+                levels: ['error'],
+                keywords: ['starting account', 'select number', 'collected'],
+                regexPatterns: []
+              }
+            }
+          };
+          require('fs').writeFileSync('config.json', JSON.stringify(cfg, null, 2));
+          "
+
+      - name: Build
+        run: npm run build
+
+      - name: Run
+        run: npm run start
+        env:
+          ACCOUNT_1_EMAIL: ${{ secrets.ACCOUNT_1_EMAIL }}
+          ACCOUNT_1_PASSWORD: ${{ secrets.ACCOUNT_1_PASSWORD }}
+          ACCOUNT_1_TOTP_SECRET: ${{ secrets.ACCOUNT_1_TOTP }}
+          ACCOUNT_1_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_1_RECOVERY_EMAIL }}
+          ACCOUNT_1_GEO_LOCALE: ${{ secrets.ACCOUNT_1_GEO_LOCALE }}
+          ACCOUNT_1_LANG_CODE: ${{ secrets.ACCOUNT_1_LANG_CODE }}
+
+          ACCOUNT_2_EMAIL: ${{ secrets.ACCOUNT_2_EMAIL }}
+          ACCOUNT_2_PASSWORD: ${{ secrets.ACCOUNT_2_PASSWORD }}
+          ACCOUNT_2_TOTP_SECRET: ${{ secrets.ACCOUNT_2_TOTP }}
+          ACCOUNT_2_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_2_RECOVERY_EMAIL }}
+          ACCOUNT_2_GEO_LOCALE: ${{ secrets.ACCOUNT_2_GEO_LOCALE }}
+          ACCOUNT_2_LANG_CODE: ${{ secrets.ACCOUNT_2_LANG_CODE }}
+
+          ACCOUNT_3_EMAIL: ${{ secrets.ACCOUNT_3_EMAIL }}
+          ACCOUNT_3_PASSWORD: ${{ secrets.ACCOUNT_3_PASSWORD }}
+          ACCOUNT_3_TOTP_SECRET: ${{ secrets.ACCOUNT_3_TOTP }}
+          ACCOUNT_3_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_3_RECOVERY_EMAIL }}
+          ACCOUNT_3_GEO_LOCALE: ${{ secrets.ACCOUNT_3_GEO_LOCALE }}
+          ACCOUNT_3_LANG_CODE: ${{ secrets.ACCOUNT_3_LANG_CODE }}

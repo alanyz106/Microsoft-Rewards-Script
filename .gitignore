@@ -10,3 +10,7 @@ note
 .playwright-chromium-installed
 .stfolder/
 .env
+memory/
+src/accounts*.json
+src/config*.json
+opencode.json

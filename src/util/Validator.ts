@@ -98,6 +98,14 @@ const WebhookSchema = z.object({
             chatId: z.string()
         })
         .optional(),
+    wxpusher: z
+        .object({
+            enabled: z.boolean().optional(),
+            appToken: z.string(),
+            uids: z.array(z.string()),
+            contentType: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional()
+        })
+        .optional(),
     webhookLogFilter: LogFilterSchema
 })
 
