@@ -899,8 +899,18 @@ export default class BrowserFunc {
         }
     }
 
-    async ensureOffer(offerId: string): Promise<ParsedOffer | null> {
-        const cached = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
+    async ensureOffer(offerId: string, title?: string): Promise<ParsedOffer | null> {
+        let cached = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
+        if (!cached && title && this.bot.reactSnapshot) {
+            const titleNorm = title.trim().toLowerCase()
+            cached = this.bot.reactSnapshot.offers.find(
+                o =>
+                    o.title &&
+                    (o.title.trim().toLowerCase() === titleNorm ||
+                        o.title.toLowerCase().includes(titleNorm) ||
+                        titleNorm.includes(o.title.toLowerCase()))
+            )
+        }
         if (cached) return cached
 
         this.bot.logger.debug(
@@ -916,12 +926,23 @@ export default class BrowserFunc {
             this.bot.reactSnapshot = refreshed
         }
 
-        const live = refreshed.offers.find(o => o.offerId === offerId) ?? null
+        let live = refreshed.offers.find(o => o.offerId === offerId) ?? null
+        if (!live && title) {
+            const titleNorm = title.trim().toLowerCase()
+            live =
+                refreshed.offers.find(
+                    o =>
+                        o.title &&
+                        (o.title.trim().toLowerCase() === titleNorm ||
+                            o.title.toLowerCase().includes(titleNorm) ||
+                            titleNorm.includes(o.title.toLowerCase()))
+                ) ?? null
+        }
 
         this.bot.logger.debug(
             this.bot.isMobile,
             'EARN-SNAPSHOT',
-            `Refetched /earn and /dashboard | offers=${refreshed.offers.length} | ${offerId} found=${!!live}`
+            `Refetched /earn and /dashboard | offers=${refreshed.offers.length} | ${offerId} (title="${title || ''}") found=${!!live}`
         )
 
         return live

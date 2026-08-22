@@ -1,3 +1,4 @@
+import type { Page } from 'patchright'
 import { URLs } from '../../../constants/urls'
 import type { BasePromotion } from '../../../interface/DashboardData'
 import { BaseActivity } from '../BaseActivity'
@@ -20,8 +21,20 @@ export class UrlReward extends BaseActivity {
             return
         }
 
-        const live = await this.bot.browser.func.ensureOffer(offerId)
+        const live = await this.bot.browser.func.ensureOffer(offerId, promotion.title)
         if (!live) {
+            const destinationUrl = promotion.destinationUrl || (promotion as { destination?: string }).destination
+            const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
+            if (destinationUrl && page) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD-FALLBACK',
+                    `Offer not found in snapshot, attempting direct navigation fallback | offerId=${offerId} | title="${promotion.title}"`
+                )
+                await this.doUrlRewardDirectNavigation(destinationUrl, promotion, page)
+                return
+            }
+
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
@@ -146,5 +159,50 @@ export class UrlReward extends BaseActivity {
         )
         await this.runUrlReward(promotion, false)
         return true
+    }
+
+    private async doUrlRewardDirectNavigation(
+        destinationUrl: string,
+        promotion: BasePromotion,
+        page: Page
+    ): Promise<void> {
+        const oldBalance = this.bot.userData.currentPoints
+        try {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'URL-REWARD-FALLBACK',
+                `Navigating to destinationUrl | offerId=${promotion.offerId} | url=${destinationUrl}`
+            )
+            await page.goto(destinationUrl, { waitUntil: 'networkidle', timeout: 25000 }).catch(() => {})
+            await this.bot.utils.wait(this.bot.utils.randomDelay(4000, 8000))
+
+            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const gainedPoints = newBalance - oldBalance
+            if (gainedPoints > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD-FALLBACK',
+                    `Completed via direct navigation | offerId=${promotion.offerId} | gainedPoints=${gainedPoints} | newBalance=${newBalance}`,
+                    'green'
+                )
+            } else {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD-FALLBACK',
+                    `No points gained via direct navigation | offerId=${promotion.offerId}`
+                )
+            }
+        } catch (err) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'URL-REWARD-FALLBACK',
+                `Direct navigation error | ${err instanceof Error ? err.message : String(err)}`
+            )
+        } finally {
+            await page.goto(URLs.rewards.dashboard, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+            await this.bot.utils.wait(2000)
+        }
     }
 }

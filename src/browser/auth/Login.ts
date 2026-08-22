@@ -282,11 +282,14 @@ export class Login {
         }
 
         if (foundStates.includes('ERROR_ALERT')) {
-            const errorIsReal = hostname === 'login.live.com' && !foundStates.includes('2FA_TOTP')
+            const errorAlert = page.locator(this.selectors.errorAlert).first()
+            const errorMsg = (await errorAlert.innerText().catch(() => '')).trim()
+            const errorIsReal =
+                hostname === 'login.live.com' && !foundStates.includes('2FA_TOTP') && errorMsg.length > 0
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DETECT-STATE',
-                `ERROR_ALERT found - hostname: ${hostname}, has 2FA: ${foundStates.includes('2FA_TOTP')}, treating as real: ${errorIsReal}`
+                `ERROR_ALERT found - hostname: ${hostname}, text: "${errorMsg}", has 2FA: ${foundStates.includes('2FA_TOTP')}, treating as real: ${errorIsReal}`
             )
             if (errorIsReal) return 'ERROR_ALERT'
             foundStates = foundStates.filter(s => s !== 'ERROR_ALERT')
@@ -465,8 +468,12 @@ export class Login {
             }
 
             case 'ERROR_ALERT': {
-                const alertEl = page.locator(this.selectors.errorAlert)
-                const errorMsg = await alertEl.innerText().catch(() => 'Unknown Error')
+                const alertEl = page.locator(this.selectors.errorAlert).first()
+                const errorMsg = (await alertEl.innerText().catch(() => 'Unknown Error')).trim()
+                if (!errorMsg) {
+                    this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'Empty error alert detected, ignoring and continuing')
+                    return true
+                }
                 this.bot.logger.error(this.bot.isMobile, 'LOGIN', `Account error: ${errorMsg}`)
                 throw new Error(`Microsoft login error: ${errorMsg}`)
             }
