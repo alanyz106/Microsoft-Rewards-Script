@@ -2,8 +2,18 @@ name: Daily Rewards
 
 on:
   schedule:
-    - cron: '0 7 * * *'
-  workflow_dispatch:        # 支持手动触发
+    - cron: '0 7 * * *'   # 每天 UTC 7:00（北京时间 15:00）
+  workflow_dispatch:        # 支持手动触发及自动补跑重试
+    inputs:
+      is_retry:
+        description: 'Whether this run is an automatic retry'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
 
 env:
   NODE_VERSION: '24'
@@ -161,4 +171,19 @@ jobs:
         run: npx tsc
 
       - name: Run
+<<<<<<< HEAD
         run: node ./dist/index.js
+=======
+        id: run-script
+        run: node ./dist/index.js
+
+      - name: Check and Trigger Retry
+        if: always() && steps.run-script.outputs.need_retry == 'true' && github.event.inputs.is_retry != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Detected account(s) gaining < 200 points on first run."
+          echo "Waiting 5 minutes before triggering retry workflow to allow Microsoft Rewards servers to refresh..."
+          sleep 300
+          gh workflow run "Daily Rewards" --ref ${{ github.ref_name }} -f is_retry=true
+>>>>>>> 97ce95e (feat: auto-trigger retry workflow if any account gains < 200 points on first run)

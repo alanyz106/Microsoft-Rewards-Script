@@ -1,3 +1,4 @@
+import fs from 'fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import cluster, { Worker } from 'cluster'
 import type { BrowserContext, Cookie, Page } from 'patchright'
@@ -46,6 +47,18 @@ interface AccountStats {
     duration: number
     success: boolean
     error?: string
+}
+
+function exportGithubOutput(stats: AccountStats[]): void {
+    const outputPath = process.env.GITHUB_OUTPUT
+    if (!outputPath) return
+
+    try {
+        const anyAccountBelow200 = stats.some(s => s.collectedPoints < 200)
+        fs.appendFileSync(outputPath, `need_retry=${anyAccountBelow200 ? 'true' : 'false'}\n`)
+    } catch {
+        // ignore if not writable
+    }
 }
 
 const executionContext = new AsyncLocalStorage<ExecutionContext>()
@@ -245,6 +258,16 @@ export class MicrosoftRewardsBot {
                     sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
                 }
 
+                exportGithubOutput(allAccountStats)
+                const lowPointAccounts = allAccountStats.filter(s => s.collectedPoints < 200)
+                if (lowPointAccounts.length > 0) {
+                    this.logger.warn(
+                        'main',
+                        'RETRY-CHECK',
+                        `${lowPointAccounts.length} account(s) gained < 200 points: ${lowPointAccounts.map(a => `${a.email} (+${a.collectedPoints})`).join(', ')}`
+                    )
+                }
+
                 await flushAllWebhooks()
 
                 process.exit(hadWorkerFailure ? 1 : 0)
@@ -400,6 +423,16 @@ export class MicrosoftRewardsBot {
                     error: s.error
                 }))
                 sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
+            }
+
+            exportGithubOutput(accountStats)
+            const lowPointAccounts = accountStats.filter(s => s.collectedPoints < 200)
+            if (lowPointAccounts.length > 0) {
+                this.logger.warn(
+                    'main',
+                    'RETRY-CHECK',
+                    `${lowPointAccounts.length} account(s) gained < 200 points: ${lowPointAccounts.map(a => `${a.email} (+${a.collectedPoints})`).join(', ')}`
+                )
             }
 
             await flushAllWebhooks()
