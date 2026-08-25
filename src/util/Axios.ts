@@ -18,9 +18,9 @@ class AxiosClient {
         })
 
         if (this.account.url && this.account.proxyAxios) {
-            const agent = this.getAgentForProxy(this.account)
-            this.instance.defaults.httpAgent = agent
-            this.instance.defaults.httpsAgent = agent
+            const { httpAgent, httpsAgent } = this.getAgentsForProxy(this.account)
+            this.instance.defaults.httpAgent = httpAgent
+            this.instance.defaults.httpsAgent = httpsAgent
         }
 
         axiosRetry(this.instance, {
@@ -37,9 +37,9 @@ class AxiosClient {
         })
     }
 
-    private getAgentForProxy(
+    private getAgentsForProxy(
         proxyConfig: AccountProxy
-    ): HttpProxyAgent<string> | HttpsProxyAgent<string> | SocksProxyAgent {
+    ): { httpAgent: HttpProxyAgent<string> | HttpsProxyAgent<string> | SocksProxyAgent; httpsAgent: HttpsProxyAgent<string> | SocksProxyAgent } {
         const { url: baseUrl, port, username, password } = proxyConfig
 
         let urlObj: URL
@@ -67,12 +67,23 @@ class AxiosClient {
 
         switch (protocol) {
             case 'http:':
-                return new HttpProxyAgent(proxyUrl)
+                return {
+                    httpAgent: new HttpProxyAgent(proxyUrl),
+                    httpsAgent: new HttpsProxyAgent(proxyUrl)
+                }
             case 'https:':
-                return new HttpsProxyAgent(proxyUrl)
+                return {
+                    httpAgent: new HttpsProxyAgent(proxyUrl),
+                    httpsAgent: new HttpsProxyAgent(proxyUrl)
+                }
             case 'socks4:':
-            case 'socks5:':
-                return new SocksProxyAgent(proxyUrl)
+            case 'socks5:': {
+                const socksAgent = new SocksProxyAgent(proxyUrl)
+                return {
+                    httpAgent: socksAgent,
+                    httpsAgent: socksAgent
+                }
+            }
             default:
                 throw new Error(`Unsupported proxy protocol: ${protocol}. Only HTTP(S) and SOCKS4/5 are supported!`)
         }

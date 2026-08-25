@@ -66,19 +66,26 @@ jobs:
           const accounts = [];
           let i = 1;
           while (process.env['ACCOUNT_' + i + '_EMAIL']) {
+            const proxyUrl = process.env['ACCOUNT_' + i + '_PROXY_URL'] || process.env['DEFAULT_PROXY_URL'] || 'http://47.95.206.224';
+            const proxyPort = parseInt(process.env['ACCOUNT_' + i + '_PROXY_PORT'] || process.env['DEFAULT_PROXY_PORT'] || '45001', 10);
+            const proxyUsername = process.env['ACCOUNT_' + i + '_PROXY_USERNAME'] || process.env['DEFAULT_PROXY_USERNAME'] || '';
+            const proxyPassword = process.env['ACCOUNT_' + i + '_PROXY_PASSWORD'] || process.env['DEFAULT_PROXY_PASSWORD'] || '';
+            const proxyAxiosRaw = process.env['ACCOUNT_' + i + '_PROXY_AXIOS'] || process.env['DEFAULT_PROXY_AXIOS'];
+            const proxyAxios = proxyAxiosRaw !== undefined ? proxyAxiosRaw === 'true' : Boolean(proxyUrl);
+
             accounts.push({
               email: process.env['ACCOUNT_' + i + '_EMAIL'],
               password: process.env['ACCOUNT_' + i + '_PASSWORD'],
               totpSecret: process.env['ACCOUNT_' + i + '_TOTP'] || '',
               recoveryEmail: process.env['ACCOUNT_' + i + '_RECOVERY_EMAIL'] || '',
-              geoLocale: process.env['ACCOUNT_' + i + '_GEO_LOCALE'] || 'auto',
-              langCode: process.env['ACCOUNT_' + i + '_LANG_CODE'] || 'en',
+              geoLocale: process.env['ACCOUNT_' + i + '_GEO_LOCALE'] || 'CN',
+              langCode: process.env['ACCOUNT_' + i + '_LANG_CODE'] || 'zh-CN',
               proxy: {
-                proxyAxios: false,
-                url: '',
-                port: 0,
-                username: '',
-                password: ''
+                proxyAxios: proxyAxios,
+                url: proxyUrl,
+                port: proxyPort,
+                username: proxyUsername,
+                password: proxyPassword
               },
               saveFingerprint: {
                 mobile: true,
@@ -101,6 +108,17 @@ jobs:
           ACCOUNT_1_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_1_RECOVERY_EMAIL }}
           ACCOUNT_1_GEO_LOCALE: ${{ secrets.ACCOUNT_1_GEO_LOCALE }}
           ACCOUNT_1_LANG_CODE: ${{ secrets.ACCOUNT_1_LANG_CODE }}
+          ACCOUNT_1_PROXY_URL: ${{ secrets.ACCOUNT_1_PROXY_URL }}
+          ACCOUNT_1_PROXY_PORT: ${{ secrets.ACCOUNT_1_PROXY_PORT }}
+          ACCOUNT_1_PROXY_USERNAME: ${{ secrets.ACCOUNT_1_PROXY_USERNAME }}
+          ACCOUNT_1_PROXY_PASSWORD: ${{ secrets.ACCOUNT_1_PROXY_PASSWORD }}
+          ACCOUNT_1_PROXY_AXIOS: ${{ secrets.ACCOUNT_1_PROXY_AXIOS }}
+
+          DEFAULT_PROXY_URL: ${{ secrets.DEFAULT_PROXY_URL }}
+          DEFAULT_PROXY_PORT: ${{ secrets.DEFAULT_PROXY_PORT }}
+          DEFAULT_PROXY_USERNAME: ${{ secrets.DEFAULT_PROXY_USERNAME }}
+          DEFAULT_PROXY_PASSWORD: ${{ secrets.DEFAULT_PROXY_PASSWORD }}
+          DEFAULT_PROXY_AXIOS: ${{ secrets.DEFAULT_PROXY_AXIOS }}
 
           ACCOUNT_2_EMAIL: ${{ secrets.ACCOUNT_2_EMAIL }}
           ACCOUNT_2_PASSWORD: ${{ secrets.ACCOUNT_2_PASSWORD }}
@@ -108,6 +126,11 @@ jobs:
           ACCOUNT_2_RECOVERY_EMAIL: ${{ secrets.ACCOUNT_2_RECOVERY_EMAIL }}
           ACCOUNT_2_GEO_LOCALE: ${{ secrets.ACCOUNT_2_GEO_LOCALE }}
           ACCOUNT_2_LANG_CODE: ${{ secrets.ACCOUNT_2_LANG_CODE }}
+          ACCOUNT_2_PROXY_URL: ${{ secrets.ACCOUNT_2_PROXY_URL }}
+          ACCOUNT_2_PROXY_PORT: ${{ secrets.ACCOUNT_2_PROXY_PORT }}
+          ACCOUNT_2_PROXY_USERNAME: ${{ secrets.ACCOUNT_2_PROXY_USERNAME }}
+          ACCOUNT_2_PROXY_PASSWORD: ${{ secrets.ACCOUNT_2_PROXY_PASSWORD }}
+          ACCOUNT_2_PROXY_AXIOS: ${{ secrets.ACCOUNT_2_PROXY_AXIOS }}
           # 如果有多个账号，按 ACCOUNT_3_*、ACCOUNT_4_* 规律添加
 
       - name: Create config.json

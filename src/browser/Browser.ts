@@ -57,6 +57,17 @@ class Browser {
                   }
                 : undefined
 
+            if (proxyConfig) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'BROWSER-PROXY',
+                    `Launching browser via proxy: ${proxyConfig.server}${proxyConfig.username ? ' (with auth)' : ''}`,
+                    'cyan'
+                )
+            } else {
+                this.bot.logger.info(this.bot.isMobile, 'BROWSER-PROXY', 'Launching browser directly (no proxy)')
+            }
+
             browser = await rebrowser.chromium.launch({
                 headless: this.bot.config.headless,
                 ...(proxyConfig && { proxy: proxyConfig }),

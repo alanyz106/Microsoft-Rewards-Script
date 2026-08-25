@@ -334,6 +334,7 @@ export class MicrosoftRewardsBot {
                 )
 
                 this.axios = new AxiosClient(account.proxy)
+                await this.checkAndLogProxy(account)
 
                 const result: { initialPoints: number; collectedPoints: number } | undefined = await this.Main(
                     account
@@ -440,6 +441,53 @@ export class MicrosoftRewardsBot {
         }
 
         return accountStats
+    }
+
+    private async checkAndLogProxy(account: Account): Promise<void> {
+        const { url, port, username } = account.proxy
+        if (!url) {
+            this.logger.info('main', 'PROXY', 'No proxy configured for this account (using direct connection)', 'yellow')
+            return
+        }
+
+        const proxyDisplay = `${url}:${port}${username ? ' (with auth)' : ''}`
+        this.logger.info('main', 'PROXY', `Testing proxy connection: ${proxyDisplay}...`)
+
+        try {
+            const response = await this.axios.request(
+                {
+                    url: 'http://ip-api.com/json/?lang=zh-CN',
+                    method: 'GET',
+                    timeout: 8000
+                },
+                false
+            )
+
+            const data = response.data
+            if (data && data.status === 'success') {
+                const country = data.country || data.countryCode || ''
+                const region = data.regionName || data.region || ''
+                const city = data.city || ''
+                const isp = data.isp || ''
+                const queryIp = data.query || ''
+                this.logger.info(
+                    'main',
+                    'PROXY',
+                    `Proxy active & verified! Outbound IP: ${queryIp} | Location: ${country} ${region} ${city} | ISP: ${isp}`,
+                    'green'
+                )
+            } else {
+                this.logger.info(
+                    'main',
+                    'PROXY',
+                    `Proxy connected! Response: ${JSON.stringify(data).slice(0, 100)}`,
+                    'cyan'
+                )
+            }
+        } catch (error) {
+            const errMsg = error instanceof Error ? error.message : String(error)
+            this.logger.warn('main', 'PROXY', `Proxy probe test failed: ${errMsg} (will continue execution)`)
+        }
     }
 
     async Main(account: Account): Promise<{ initialPoints: number; collectedPoints: number }> {
