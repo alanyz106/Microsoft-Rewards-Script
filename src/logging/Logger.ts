@@ -70,7 +70,7 @@ export class Logger {
         message: string | Error,
         color?: ColorKey
     ): void {
-        const now = new Date().toLocaleString()
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
         const formatted = formatMessage(message)
 
         const userName = this.bot.userData.userName ? this.bot.userData.userName : 'MAIN'
