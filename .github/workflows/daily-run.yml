@@ -66,8 +66,8 @@ jobs:
           const accounts = [];
           let i = 1;
           while (process.env['ACCOUNT_' + i + '_EMAIL']) {
-            const proxyUrl = process.env['ACCOUNT_' + i + '_PROXY_URL'] || process.env['DEFAULT_PROXY_URL'] || 'http://47.95.206.224';
-            const proxyPort = parseInt(process.env['ACCOUNT_' + i + '_PROXY_PORT'] || process.env['DEFAULT_PROXY_PORT'] || '45001', 10);
+            const proxyUrl = process.env['ACCOUNT_' + i + '_PROXY_URL'] || process.env['DEFAULT_PROXY_URL'] || '';
+            const proxyPort = parseInt(process.env['ACCOUNT_' + i + '_PROXY_PORT'] || process.env['DEFAULT_PROXY_PORT'] || '0', 10);
             const proxyUsername = process.env['ACCOUNT_' + i + '_PROXY_USERNAME'] || process.env['DEFAULT_PROXY_USERNAME'] || '';
             const proxyPassword = process.env['ACCOUNT_' + i + '_PROXY_PASSWORD'] || process.env['DEFAULT_PROXY_PASSWORD'] || '';
             const proxyAxiosRaw = process.env['ACCOUNT_' + i + '_PROXY_AXIOS'] || process.env['DEFAULT_PROXY_AXIOS'];
