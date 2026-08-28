@@ -1,8 +1,6 @@
 name: Daily Rewards
 
 on:
-  schedule:
-    - cron: '5 8 * * *'   # 每天 UTC 8:05（北京时间 16:05，微软每日配额重置后执行）
   workflow_dispatch:        # 支持手动触发及自动补跑重试
     inputs:
       is_retry:
