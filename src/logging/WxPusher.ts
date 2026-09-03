@@ -21,7 +21,15 @@ export interface AccountSummary {
 }
 
 async function sendRaw(config: WebhookWxPusherConfig, content: string, contentType: 1 | 2 | 3): Promise<void> {
-    if (!config?.enabled || !config.appToken || !config.uids?.length) return
+    if (!config?.enabled || !config.appToken || !config.uids?.length) {
+        // Why log a skip: a silent no-op here is indistinguishable from a
+        // successful push when reading CI logs. Make the branch observable.
+        console.log(
+            `[WxPusher] Skipped: enabled=${!!config?.enabled} ` +
+                `appTokenSet=${!!config?.appToken} uidCount=${config?.uids?.length ?? 0}`
+        )
+        return
+    }
 
     const request: AxiosRequestConfig = {
         method: 'POST',
@@ -38,10 +46,30 @@ async function sendRaw(config: WebhookWxPusherConfig, content: string, contentTy
 
     await wxpusherQueue.add(async () => {
         try {
-            await axios(request)
+            const res = await axios(request)
+            // WxPusher signals business-level failure inside a 200 response:
+            // { code: 1000 } is the only true success. Log it so a green HTTP
+            // status can't mask a rejected (e.g. bad appToken/uid) message.
+            const body = res?.data
+            const code = body?.code
+            const ok = code === 1000
+            console.log(
+                `[WxPusher] ${ok ? 'Sent' : 'REJECTED'} | http=${res?.status} ` +
+                    `code=${code ?? 'n/a'} msg=${body?.msg ?? 'n/a'} ` +
+                    `uids=${config.uids.length} bytes=${Buffer.byteLength(content)}`
+            )
+            if (!ok) console.log(`[WxPusher] Response body: ${JSON.stringify(body)}`)
         } catch (err: any) {
             const status = err?.response?.status
-            if (status === 429) return
+            if (status === 429) {
+                console.log(`[WxPusher] Rate limited (429), message dropped`)
+                return
+            }
+            console.log(
+                `[WxPusher] FAILED | status=${status ?? 'n/a'} ` +
+                    `err=${err?.message ?? err} ` +
+                    `body=${JSON.stringify(err?.response?.data ?? null)}`
+            )
         }
     })
 }
