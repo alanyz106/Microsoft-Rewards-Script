@@ -15,6 +15,7 @@ bun.lock
 logs/
 .stfolder/
 .env
+.env.bak*
 memory/
 rules/
 AGENTS.md

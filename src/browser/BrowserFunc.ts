@@ -28,11 +28,11 @@ export default class BrowserFunc {
                 method: 'GET',
                 headers: {
                     ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
+                    // 只发 .bing.com 域的 cookie：与浏览器行为一致。
+                    // 旧的 ['bing.com','live.com','microsoftonline.com'] 会把 .login.live.com 的
+                    // OParams*、.account.live.com 的 IPT、.login.microsoftonline.com 的 esctx-*
+                    // 也塞进来，使 Cookie 头膨胀到 30KB+，触发服务端限流（400 / HTTP2 ENHANCE_YOUR_CALM）。
+                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, ['bing.com']),
                     Referer: 'https://rewards.bing.com/',
                     Origin: 'https://rewards.bing.com'
                 }
@@ -54,7 +54,7 @@ export default class BrowserFunc {
                     method: 'GET',
                     headers: {
                         ...(this.bot.fingerprint?.headers ?? {}),
-                        Cookie: this.buildCookieHeader(this.bot.cookies.mobile),
+                        Cookie: this.buildCookieHeader(this.bot.cookies.mobile, ['bing.com']),
                         Referer: 'https://rewards.bing.com/',
                         Origin: 'https://rewards.bing.com'
                     }
@@ -316,11 +316,11 @@ export default class BrowserFunc {
                 method: 'POST',
                 headers: {
                     ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
+                    // 只发 .bing.com 域的 cookie：与浏览器行为一致。
+                    // 旧的 ['bing.com','live.com','microsoftonline.com'] 会把 .login.live.com 的
+                    // OParams*、.account.live.com 的 IPT、.login.microsoftonline.com 的 esctx-*
+                    // 也塞进来，使 Cookie 头膨胀到 30KB+，触发服务端限流（400 / HTTP2 ENHANCE_YOUR_CALM）。
+                    Cookie: this.buildCookieHeader(this.bot.cookies.mobile, ['bing.com']),
                     Referer: 'https://rewards.bing.com/',
                     Origin: 'https://rewards.bing.com'
                 },

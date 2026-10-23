@@ -378,7 +378,8 @@ export class QueryCore {
             const dd = String(date.getUTCDate()).padStart(2, '0')
 
             const request: AxiosRequestConfig = {
-                url: `https://wikimedia.org/api/rest_v1/metrics/pageviews/top/${langCode}.wikipedia/all-access/${yyyy}/${mm}/${dd}`,
+                // Wikipedia 接口只接受主语言子域（en.wikipedia），故去掉 "en-US" 这类地区后缀
+                url: `https://wikimedia.org/api/rest_v1/metrics/pageviews/top/${langCode.split('-')[0]}.wikipedia/all-access/${yyyy}/${mm}/${dd}`,
                 method: 'GET',
                 headers: {
                     ...(this.bot.fingerprint?.headers ?? {})

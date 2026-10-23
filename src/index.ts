@@ -521,7 +521,19 @@ export class MicrosoftRewardsBot {
                 this.fingerprint = mobileSession.fingerprint
 
                 const data: DashboardData = await this.browser.func.getDashboardData()
-                const appData: AppDashboardData = await this.browser.func.getAppDashboardData()
+
+                let appData: AppDashboardData | undefined
+                let appChannelAvailable = true
+                try {
+                    appData = await this.browser.func.getAppDashboardData()
+                } catch (error) {
+                    appChannelAvailable = false
+                    this.logger.warn(
+                        'main',
+                        'APP-CHANNEL',
+                        `App/mobile API unavailable (${error instanceof Error ? error.message : String(error)}) — skipping app-only activities, browser/desktop will continue`
+                    )
+                }
 
                 // Set geo
                 this.userData.geoLocale =
@@ -539,7 +551,20 @@ export class MicrosoftRewardsBot {
                 const initialPoints = this.userData.initialPoints ?? 0
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
-                const appEarnable = await this.browser.func.getAppEarnablePoints()
+
+                let appEarnable = { readToEarn: 0, checkIn: 0, totalEarnablePoints: 0 }
+                if (appChannelAvailable) {
+                    try {
+                        appEarnable = await this.browser.func.getAppEarnablePoints()
+                    } catch (error) {
+                        appChannelAvailable = false
+                        this.logger.warn(
+                            'main',
+                            'APP-CHANNEL',
+                            `App earnable-points API unavailable (${error instanceof Error ? error.message : String(error)}) — skipping app-only activities`
+                        )
+                    }
+                }
 
                 this.pointsCanCollect = browserEarnable.mobileSearchPoints + (appEarnable?.totalEarnablePoints ?? 0)
 
@@ -556,12 +581,13 @@ export class MicrosoftRewardsBot {
                     await this.browser.func.ensureStreakProtection()
                 }
                 if (this.config.workers.doClaimBonusPoints) await this.workers.doClaimBonusPoints(data)
-                if (this.config.workers.doAppPromotions) await this.workers.doAppPromotions(appData)
+                if (this.config.workers.doAppPromotions && appChannelAvailable && appData)
+                    await this.workers.doAppPromotions(appData)
                 if (this.config.workers.doDailySet) await this.workers.doDailySet(data, this.mainMobilePage)
                 if (this.config.workers.doSpecialPromotions) await this.workers.doSpecialPromotions(data)
                 if (this.config.workers.doMorePromotions) await this.workers.doMorePromotions(data, this.mainMobilePage)
-                if (this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
-                if (this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
+                if (this.config.workers.doDailyCheckIn && appChannelAvailable) await this.activities.doDailyCheckIn()
+                if (this.config.workers.doReadToEarn && appChannelAvailable) await this.activities.doReadToEarn()
                 if (this.config.workers.doPunchCards) await this.workers.doPunchCards(data, this.mainMobilePage)
 
                 const searchPoints = await this.browser.func.getSearchPoints()

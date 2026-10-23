@@ -87,10 +87,11 @@ export class Login {
             await this.bot.browser.utils.reloadBadPage(page)
             await this.bot.browser.utils.disableFido(page)
 
-            const maxIterations = 25
+            const maxIterations = 40
             let iteration = 0
             let previousState: LoginState = 'UNKNOWN'
             let sameStateCount = 0
+            let loggedIn = false
 
             while (iteration < maxIterations) {
                 if (page.isClosed()) throw new Error('Page closed unexpectedly')
@@ -131,6 +132,7 @@ export class Login {
 
                 if (state === 'LOGGED_IN') {
                     this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Successfully logged in')
+                    loggedIn = true
                     break
                 }
 
@@ -142,7 +144,7 @@ export class Login {
                 await this.bot.utils.wait(1000)
             }
 
-            if (iteration >= maxIterations) {
+            if (!loggedIn) {
                 throw new Error('Login timeout: exceeded maximum iterations')
             }
 
@@ -276,7 +278,7 @@ export class Login {
 
     private async checkSelector(page: Page, selector: string): Promise<boolean> {
         return page
-            .waitForSelector(selector, { state: 'visible', timeout: 200 })
+            .waitForSelector(selector, { state: 'visible', timeout: 1000 })
             .then(() => true)
             .catch(() => false)
     }
