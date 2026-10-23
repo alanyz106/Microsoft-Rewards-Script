@@ -16,6 +16,7 @@ logs/
 .stfolder/
 .env
 .env.bak*
+.playwright-cli/
 memory/
 rules/
 AGENTS.md
