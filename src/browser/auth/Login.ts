@@ -27,6 +27,8 @@ type LoginState =
     | 'LOGIN_PASSWORDLESS'
     | 'GET_A_CODE'
     | 'GET_A_CODE_2'
+    | 'REWARDS_ANON_PAGE'
+    | 'FIDO_BRIDGE'
     | 'OTP_CODE_ENTRY'
     | 'UNKNOWN'
     | 'CHROMEWEBDATA_ERROR'
@@ -63,7 +65,11 @@ export class Login {
         bingProfile: '#id_n',
         requestToken: 'input[name="__RequestVerificationToken"]',
         requestTokenMeta: 'meta[name="__RequestVerificationToken"]',
-        otpInput: 'div[data-testid="codeEntry"]'
+        otpInput: 'div[data-testid="codeEntry"]',
+        // 新版 “Get a code to sign in” 页面上的 “Use your password” 链接（见 memory/troubleshooting.md #8）
+        useYourPassword: '#idA_PWD_SwitchToPassword',
+        // 新版 KMSI 页面的按钮没有 #idSIButton9，只能按文字点
+        kmsiYesButton: 'button:has-text("Yes")'
     } as const
 
     constructor(private bot: MicrosoftRewardsBot) {
@@ -176,7 +182,33 @@ export class Login {
             return 'ACCOUNT_LOCKED'
         }
 
+        // 被强制弹到 Passkey/FIDO 桥接页时（"Signing in with your passkey..."），
+        // 用 URL 里的 cancelUrl 退回，回到正常的登录选项（见 memory/troubleshooting.md #8）
+        if (/bridge\/fido|\/fido\/get/i.test(url.pathname)) {
+            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'Passkey/FIDO bridge page detected')
+            return 'FIDO_BRIDGE'
+        }
+
+        // 新版 KMSI 页面既没有 kmsiVideo 也没有 #idSIButton9，只能靠标题识别（"Stay signed in?"）
+        const pageTitle = await page.title().catch(() => '')
+        if (/stay signed in|保持登录状态/i.test(pageTitle)) {
+            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'KMSI prompt detected by page title')
+            return 'KMSI_PROMPT'
+        }
+
         if (url.hostname === 'rewards.bing.com' || url.hostname === 'account.microsoft.com') {
+            // /createuser（加入 Rewards / 匿名入口）和 /about（公开页）在**未登录**时也会出现，
+            // 直接判定 LOGGED_IN 会让整个登录流程被跳过 → 必须排除。
+            // 详见 memory/troubleshooting.md #8（启用 Passkey 的账号 alanyz 就是这样失败的）
+            if (/^\/(createuser|about)(\/|$)/i.test(url.pathname)) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'DETECT-STATE',
+                    `On anonymous rewards page (${url.pathname}) — not treating as logged in`
+                )
+                return 'REWARDS_ANON_PAGE'
+            }
+
             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'On rewards/account page, assuming logged in')
             return 'LOGGED_IN'
         }
@@ -303,6 +335,63 @@ export class Login {
             case 'LOGGED_IN':
                 return true
 
+            case 'REWARDS_ANON_PAGE': {
+                // 落在 /createuser 或 /about 说明其实没登录，点页面上的 “Sign in” 真正进入登录流程
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Anonymous Rewards page detected — starting sign-in')
+
+                const clicked = await this.bot.browser.utils.ghostClick(
+                    page,
+                    'a:has-text("Sign in"), button:has-text("Sign in"), [data-bi-id*="signin" i]'
+                )
+
+                if (!clicked) {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'LOGIN',
+                        'No "Sign in" control found, navigating to login.live.com directly'
+                    )
+                    await page
+                        .goto('https://login.live.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+                        .catch(() => {})
+                }
+
+                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after anon page sign-in')
+                })
+                await this.bot.utils.wait(2000)
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Sign-in initiated from anonymous Rewards page')
+                return true
+            }
+
+            case 'FIDO_BRIDGE': {
+                // "Signing in with your passkey..." 桥接页：用 cancelUrl 退回正常登录选项
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Passkey/FIDO bridge page — falling back')
+
+                let cancelUrl: string | null = null
+                try {
+                    const u = new URL(page.url())
+                    cancelUrl = u.searchParams.get('cancelUrl') ?? u.searchParams.get('cancelurl')
+                } catch {
+                    cancelUrl = null
+                }
+
+                if (cancelUrl) {
+                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Navigating back via cancelUrl')
+                    await page.goto(cancelUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
+                } else {
+                    const wentBack =
+                        (await this.bot.browser.utils.ghostClick(page, 'button[aria-label="Back"]')) ||
+                        (await this.bot.browser.utils.ghostClick(page, this.selectors.backButton))
+                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', `Back button used on bridge page: ${wentBack}`)
+                }
+
+                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after FIDO fallback')
+                })
+                await this.bot.utils.wait(2000)
+                return true
+            }
+
             case 'EMAIL_INPUT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Entering email')
                 await this.emailLogin.enterEmail(page, account.email)
@@ -325,6 +414,23 @@ export class Login {
 
             case 'GET_A_CODE': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Attempting to bypass "Get code" page')
+
+                // 0) 新版页面自带 “Use your password” 链接，优先点它（最省事、最可靠）
+                const usedPassword =
+                    (await this.bot.browser.utils.ghostClick(page, this.selectors.useYourPassword)) ||
+                    (await this.bot.browser.utils.ghostClick(
+                        page,
+                        'a:has-text("Use your password"), [role="button"]:has-text("Use your password")'
+                    ))
+
+                if (usedPassword) {
+                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', '"Use your password" clicked')
+                    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+                        this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after use-password')
+                    })
+                    await this.bot.utils.wait(1500)
+                    return true
+                }
 
                 // Try to find "Other ways to sign in" link
                 const otherWaysLink = await page
@@ -478,7 +584,12 @@ export class Login {
 
             case 'KMSI_PROMPT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Accepting KMSI prompt')
-                await this.bot.browser.utils.ghostClick(page, this.selectors.primaryButton)
+                // 新版页面按钮不再是 #idSIButton9，逐级兜底
+                const kmsiAccepted =
+                    (await this.bot.browser.utils.ghostClick(page, this.selectors.primaryButton)) ||
+                    (await this.bot.browser.utils.ghostClick(page, this.selectors.kmsiYesButton)) ||
+                    (await this.bot.browser.utils.ghostClick(page, '#idSIButton9'))
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', `KMSI accepted: ${kmsiAccepted}`)
                 await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
                     this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after KMSI acceptance')
                 })
