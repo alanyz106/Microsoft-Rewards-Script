@@ -49,12 +49,13 @@ interface AccountStats {
     error?: string
 }
 
-function exportGithubOutput(stats: AccountStats[]): void {
+function exportGithubOutput(stats: AccountStats[], retryOnLowPoints: boolean): void {
     const outputPath = process.env.GITHUB_OUTPUT
     if (!outputPath) return
 
     try {
-        const anyAccountBelow200 = stats.some(s => s.collectedPoints < 200)
+        // 仅在配置开关打开时才参与「积分未满 200 就重跑」判定；关闭时恒为 false，外层脚本不会重跑
+        const anyAccountBelow200 = retryOnLowPoints && stats.some(s => s.collectedPoints < 200)
         fs.appendFileSync(outputPath, `need_retry=${anyAccountBelow200 ? 'true' : 'false'}\n`)
     } catch {
         // ignore if not writable
@@ -258,15 +259,8 @@ export class MicrosoftRewardsBot {
                     sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
                 }
 
-                exportGithubOutput(allAccountStats)
-                const lowPointAccounts = allAccountStats.filter(s => s.collectedPoints < 200)
-                if (lowPointAccounts.length > 0) {
-                    this.logger.warn(
-                        'main',
-                        'RETRY-CHECK',
-                        `${lowPointAccounts.length} account(s) gained < 200 points: ${lowPointAccounts.map(a => `${a.email} (+${a.collectedPoints})`).join(', ')}`
-                    )
-                }
+                exportGithubOutput(allAccountStats, this.config.retryOnLowPoints)
+                this.logLowPointAccounts(allAccountStats)
 
                 await flushAllWebhooks()
 
@@ -282,6 +276,23 @@ export class MicrosoftRewardsBot {
             const pid = worker.process?.pid
             this.logger.warn('main', 'CLUSTER-WORKER-DISCONNECT', `Worker ${pid ?? '?'} disconnected`) // <-- Warning only
         })
+    }
+
+    /** 开关 `retryOnLowPoints` 关闭时只记 info，不再给出「会重跑」的告警 */
+    private logLowPointAccounts(stats: AccountStats[]): void {
+        if (!this.config.retryOnLowPoints) {
+            this.logger.info('main', 'RETRY-CHECK', 'retryOnLowPoints is disabled, skipping < 200 points retry check')
+            return
+        }
+
+        const lowPointAccounts = stats.filter(s => s.collectedPoints < 200)
+        if (lowPointAccounts.length > 0) {
+            this.logger.warn(
+                'main',
+                'RETRY-CHECK',
+                `${lowPointAccounts.length} account(s) gained < 200 points: ${lowPointAccounts.map(a => `${a.email} (+${a.collectedPoints})`).join(', ')}`
+            )
+        }
     }
 
     private runWorker(runStartTimeFromMaster?: number): void {
@@ -426,15 +437,8 @@ export class MicrosoftRewardsBot {
                 sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
             }
 
-            exportGithubOutput(accountStats)
-            const lowPointAccounts = accountStats.filter(s => s.collectedPoints < 200)
-            if (lowPointAccounts.length > 0) {
-                this.logger.warn(
-                    'main',
-                    'RETRY-CHECK',
-                    `${lowPointAccounts.length} account(s) gained < 200 points: ${lowPointAccounts.map(a => `${a.email} (+${a.collectedPoints})`).join(', ')}`
-                )
-            }
+            exportGithubOutput(accountStats, this.config.retryOnLowPoints)
+            this.logLowPointAccounts(accountStats)
 
             await flushAllWebhooks()
             process.exit(0)

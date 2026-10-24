@@ -5,6 +5,8 @@ export interface Config {
     clusters: number
     errorDiagnostics: boolean
     ensureStreakProtection: boolean
+    /** 某账号当日得分 < 200 时，让外层（.dev/run-daily.sh）再重跑一次。默认 false（关闭） */
+    retryOnLowPoints: boolean
     workers: ConfigWorkers
     searchOnBingLocalQueries: boolean
     globalTimeout: number | string

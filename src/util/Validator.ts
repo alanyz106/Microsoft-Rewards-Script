@@ -60,6 +60,7 @@ export const ConfigSchema = z.object({
     clusters: z.number().int().nonnegative(),
     errorDiagnostics: z.boolean(),
     ensureStreakProtection: z.boolean(),
+    retryOnLowPoints: z.boolean(),
     workers: z.object({
         doDailySet: z.boolean(),
         doSpecialPromotions: z.boolean(),
@@ -119,6 +120,7 @@ const defaultConfig: Config = {
     clusters: 1,
     errorDiagnostics: true,
     ensureStreakProtection: true,
+    retryOnLowPoints: false,
     workers: {
         doDailySet: true,
         doSpecialPromotions: true,
