@@ -447,9 +447,103 @@ export class UrlReward extends Workers {
                 }
             }
         } finally {
+            // 浏览器三层兜底都没拿到分时，最后试一次 dapi 通道。
+            // 新版（modern）仪表盘已彻底移除 __RequestVerificationToken，
+            // /api/reportactivity 不再可用；但 dapi/me/activities + offerId 依然有效，
+            // 与 DailyCheckIn / ReadToEarn / AppReward 走的是同一条链路。
+            //
+            // 只对「本身带积分的活动」尝试：Punch Card 的子项 pointProgressMax 全是 0
+            // （分记在父卡片上），dapi 提交返回 200 但永远 0 分，每次还白等 ~13s。
+            const pointValue = Number(promotion.pointProgressMax ?? 0)
+            if (this.gainedPoints <= 0 && this.bot.accessToken && offerId && pointValue > 0) {
+                const gained = await this.tryDapiFallback(offerId, promotion.title ?? '')
+                if (gained > 0) {
+                    this.gainedPoints = gained
+                }
+            }
+
             // Navigate back to the rewards page so the next activity can find links
             await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {})
             await this.bot.utils.wait(3000)
+        }
+    }
+
+    /**
+     * 用 OAuth accessToken 走 dapi 提交活动（modern 仪表盘唯一可靠的加分通道）。
+     *
+     * 实测（2026-10-26，账号 alanyz）：__RequestVerificationToken 在 /dashboard、/earn、/about
+     * 三个页面的 HTML 里出现 0 次，/api/reportactivity 不带 token 直接 400；
+     * 而 dapi + offerId 提交后余额稳定 +10 / +30，Daily Set 随之标记 complete。
+     *
+     * 注意：dapi 响应的 p 字段不反映即时入账，必须轮询余额确认，故这里提交后 sleep 再取分。
+     */
+    private async tryDapiFallback(offerId: string, title: string): Promise<number> {
+        const oldBalance = Number(this.bot.userData.currentPoints ?? this.oldBalance ?? 0)
+
+        try {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'URL-REWARD-DAPI',
+                `Trying dapi fallback | offerId=${offerId} | title="${title}" | oldBalance=${oldBalance}`
+            )
+
+            const { randomUUID } = await import('crypto')
+
+            const request: AxiosRequestConfig = {
+                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${this.bot.accessToken}`,
+                    'User-Agent':
+                        'Bing/32.5.431027001 (com.microsoft.bing; build:431027001; iOS 17.6.1) Alamofire/5.10.2',
+                    'Content-Type': 'application/json',
+                    'X-Rewards-Country': this.bot.userData.geoLocale,
+                    'X-Rewards-Language': 'en',
+                    'X-Rewards-ismobile': 'true'
+                },
+                data: JSON.stringify({
+                    id: randomUUID(),
+                    amount: 1,
+                    type: 101,
+                    attributes: { offerid: offerId },
+                    country: this.bot.userData.geoLocale
+                })
+            }
+
+            const response = await this.bot.axios.request(request)
+
+            // dapi 的 p 字段不代表即时入账，等一会儿再用 dashboard 余额确认
+            await this.bot.utils.wait(8000)
+
+            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const gained = newBalance - oldBalance
+
+            if (gained > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gained
+
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD-DAPI',
+                    `Completed via dapi | offerId=${offerId} | status=${response.status} | gainedPoints=${gained} | newBalance=${newBalance}`,
+                    'green'
+                )
+                return gained
+            }
+
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD-DAPI',
+                `dapi returned ${response.status} but no points gained | offerId=${offerId} | oldBalance=${oldBalance} | newBalance=${newBalance}`
+            )
+            return 0
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD-DAPI',
+                `dapi fallback failed | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
+            )
+            return 0
         }
     }
 }
