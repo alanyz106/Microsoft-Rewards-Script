@@ -18,6 +18,73 @@ export default class BrowserFunc {
     }
 
     /**
+     * 判断 context（及其底层浏览器）是否还活着。
+     * 浏览器进程崩溃/被关闭后，Playwright 不会主动抛错，只会让后续每次调用都报
+     * "Target page, context or browser has been closed"，所以必须显式探测。
+     */
+    isContextAlive(context: BrowserContext): boolean {
+        try {
+            if (!context || typeof context.cookies !== 'function') return false
+            // playwright 的 BrowserContext 没有公开 isClosed()，但底层 browser 有 isConnected()
+            const browser = (context as any).browser?.()
+            if (browser && typeof browser.isConnected === 'function' && !browser.isConnected()) return false
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /**
+     * 识别「浏览器/页面已关闭」这一类错误，用于尽早中止无意义的后续操作。
+     */
+    isBrowserClosedError(error: unknown): boolean {
+        const message = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase()
+        if (!message) return false
+        return (
+            message.includes('has been closed') ||
+            message.includes('target closed') ||
+            message.includes('target page, context or browser') ||
+            message.includes('browser has been disconnected') ||
+            message.includes('browserclosed') ||
+            message.includes('page closed') ||
+            message.includes('session closed')
+        )
+    }
+
+    /**
+     * 安全读取 cookie：context 已关闭时返回回退值而不是抛错。
+     * 这里保护的是「上层记账」——一次浏览器崩溃不该让整个账号被判 0 分，
+     * 因为崩溃前那些活动的得分其实已经真实到账。
+     */
+    async safeGetCookies(context: BrowserContext, fallback: Cookie[] = []): Promise<{ cookies: Cookie[]; ok: boolean }> {
+        if (!this.isContextAlive(context)) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'COOKIES',
+                `Context already closed, reusing last known cookies (${fallback.length} kept)`
+            )
+            return { cookies: fallback, ok: false }
+        }
+
+        try {
+            const cookies = await context.cookies()
+            return { cookies, ok: true }
+        } catch (error) {
+            if (this.isBrowserClosedError(error)) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'COOKIES',
+                    `Reading cookies failed (browser closed), reusing last known cookies (${fallback.length} kept) | message=${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                )
+                return { cookies: fallback, ok: false }
+            }
+            throw error
+        }
+    }
+
+    /**
      * Fetch user desktop dashboard data
      * @returns {DashboardData} Object of user bing rewards dashboard data
      */

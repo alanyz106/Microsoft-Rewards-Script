@@ -238,6 +238,16 @@ export class Workers {
 
     private async solveActivities(activities: BasePromotion[], page: Page, punchCard?: PunchCard) {
         for (const activity of activities) {
+            // 浏览器已关闭时继续逐个尝试只会白等（每次 goto 都要等到超时），直接中止整批
+            if (page.isClosed()) {
+                this.bot.logger.error(
+                    this.bot.isMobile,
+                    'ACTIVITY',
+                    `Aborting remaining ${activities.length} activities: browser/page was closed unexpectedly | next="${activity.title}" | offerId=${activity.offerId}`
+                )
+                break
+            }
+
             try {
                 const type = activity.promotionType?.toLowerCase() ?? ''
                 const name = activity.name?.toLowerCase() ?? ''
@@ -336,6 +346,16 @@ export class Workers {
                     'ACTIVITY',
                     `Error while solving activity "${activity.title}" | message=${error instanceof Error ? error.message : String(error)}`
                 )
+
+                // 浏览器/页面已关闭：立即终止，不再逐个空转
+                if (this.bot.browser.func.isBrowserClosedError(error) || page.isClosed()) {
+                    this.bot.logger.error(
+                        this.bot.isMobile,
+                        'ACTIVITY',
+                        `Aborting remaining activities: browser was closed unexpectedly | after="${activity.title}"`
+                    )
+                    break
+                }
             }
         }
     }

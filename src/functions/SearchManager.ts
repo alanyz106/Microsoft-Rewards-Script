@@ -27,7 +27,8 @@ export class SearchManager {
         missingSearchPoints: MissingSearchPoints,
         mobileSession: BrowserSession,
         account: Account,
-        accountEmail: string
+        accountEmail: string,
+        mobileContextAlive: boolean = true
     ): Promise<SearchResults> {
         this.bot.logger.debug(
             'main',
@@ -35,14 +36,26 @@ export class SearchManager {
             `Start | account=${accountEmail} | mobileMissing=${missingSearchPoints.mobilePoints} | desktopMissing=${missingSearchPoints.desktopPoints}`
         )
 
-        const doMobile = this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
+        // 移动端 context 若已失效，就不要再往里派任务（否则只会得到一串 closed 错误）
+        if (!mobileContextAlive) {
+            this.bot.logger.warn(
+                'main',
+                'SEARCH-MANAGER',
+                'Mobile context is dead — skipping mobile search, desktop search will still run'
+            )
+            missingSearchPoints = { ...missingSearchPoints, mobilePoints: 0 }
+        }
+
+        const doMobile = mobileContextAlive && this.bot.config.workers.doMobileSearch && missingSearchPoints.mobilePoints > 0
         const doDesktop = this.bot.config.workers.doDesktopSearch && missingSearchPoints.desktopPoints > 0
 
-        const mobileStatus = this.bot.config.workers.doMobileSearch
-            ? missingSearchPoints.mobilePoints > 0
-                ? 'run'
-                : 'skip-no-points'
-            : 'skip-disabled'
+        const mobileStatus = !mobileContextAlive
+            ? 'skip-context-dead'
+            : this.bot.config.workers.doMobileSearch
+              ? missingSearchPoints.mobilePoints > 0
+                  ? 'run'
+                  : 'skip-no-points'
+              : 'skip-disabled'
         const desktopStatus = this.bot.config.workers.doDesktopSearch
             ? missingSearchPoints.desktopPoints > 0
                 ? 'run'

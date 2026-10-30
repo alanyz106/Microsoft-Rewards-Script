@@ -521,7 +521,8 @@ export class MicrosoftRewardsBot {
                     )
                 }
 
-                this.cookies.mobile = await initialContext.cookies()
+                const initialCookies = await this.browser.func.safeGetCookies(initialContext, this.cookies.mobile)
+                this.cookies.mobile = initialCookies.cookies
                 this.fingerprint = mobileSession.fingerprint
 
                 const data: DashboardData = await this.browser.func.getDashboardData()
@@ -597,14 +598,26 @@ export class MicrosoftRewardsBot {
                 const searchPoints = await this.browser.func.getSearchPoints()
                 const missingSearchPoints = this.browser.func.missingSearchPoints(searchPoints, true)
 
-                this.cookies.mobile = await initialContext.cookies()
+                // 浏览器可能已经崩溃：这里绝不能抛错，否则整个账号会被判 0 分（含已到账的活动分）。
+                const latestCookies = await this.browser.func.safeGetCookies(initialContext, this.cookies.mobile)
+                this.cookies.mobile = latestCookies.cookies
+                const mobileBrowserAlive = latestCookies.ok
+
+                if (!mobileBrowserAlive) {
+                    this.logger.warn(
+                        'main',
+                        'FLOW',
+                        `Mobile browser is no longer alive for ${accountEmail} — skipping mobile work, continuing with desktop/API`
+                    )
+                }
 
                 const { mobilePoints, desktopPoints } = await this.searchManager.doSearches(
                     data,
                     missingSearchPoints,
                     mobileSession,
                     account,
-                    accountEmail
+                    accountEmail,
+                    mobileBrowserAlive
                 )
 
                 mobileContextClosed = true
