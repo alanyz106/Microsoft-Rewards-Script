@@ -76,6 +76,19 @@ async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
     await Promise.allSettled([flushDiscordQueue(timeoutMs), flushNtfyQueue(timeoutMs), flushWxPusherQueue(timeoutMs)])
 }
 
+/** AccountStats → 推送用的 AccountSummary，两处汇总共用，避免字段漏映射 */
+function toAccountSummaries(stats: AccountStats[]): AccountSummary[] {
+    return stats.map(s => ({
+        email: s.email,
+        collectedPoints: s.collectedPoints,
+        initialPoints: s.initialPoints,
+        finalPoints: s.finalPoints,
+        duration: s.duration,
+        success: s.success,
+        error: s.error
+    }))
+}
+
 interface UserData {
     userName: string
     geoLocale: string
@@ -114,6 +127,16 @@ export class MicrosoftRewardsBot {
     private workers: Workers
     private login = new Login(this)
     private searchManager: SearchManager
+
+    /**
+     * 中断兜底用的进度快照。
+     * 为什么需要：推送原本只在「所有账号跑完」时发一次，账号卡住/超时被杀时
+     * 一条都发不出去，等同于静默失败。这里记录已完成账号，收到信号时可补发。
+     */
+    private completedStats: AccountStats[] = []
+    private inProgressEmail: string | null = null
+    private inProgressStartTime = 0
+    private wxSummarySent = false
 
     public axios!: AxiosClient
 
@@ -328,6 +351,47 @@ export class MicrosoftRewardsBot {
         })
     }
 
+    /**
+     * 进程被信号中断时补发一次汇总：已完成的账号照实报，正在跑的账号标为「未完成」。
+     * 目的：宁可推送“部分完成 + 明确警告”，也不要像 2026-10-28 那样整天静默。
+     */
+    public async pushSummaryOnInterrupt(): Promise<void> {
+        if (this.wxSummarySent) return // 正常收尾已经发过，避免重复推送
+        this.wxSummarySent = true
+
+        const wx = this.config?.webhook?.wxpusher
+        if (!wx?.enabled) return
+
+        const summaries = toAccountSummaries(this.completedStats)
+        if (this.inProgressEmail) {
+            summaries.push({
+                email: this.inProgressEmail,
+                collectedPoints: 0,
+                initialPoints: 0,
+                finalPoints: 0,
+                duration: (Date.now() - this.inProgressStartTime) / 1000,
+                success: false,
+                error: '运行被中断',
+                incomplete: true
+            })
+        }
+        if (!summaries.length) {
+            this.logger.warn('main', 'PROCESS', 'Interrupted before any account finished, nothing to push')
+            return
+        }
+
+        this.logger.warn(
+            'main',
+            'PROCESS',
+            `Pushing partial summary on interrupt | completed=${this.completedStats.length} | inProgress=${this.inProgressEmail ?? 'none'}`
+        )
+        try {
+            await sendWxPusherSummary(wx, summaries, { interrupted: true })
+        } catch (error) {
+            this.logger.error('main', 'PROCESS', `Interrupted summary push failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+    }
+
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
 
@@ -336,6 +400,10 @@ export class MicrosoftRewardsBot {
             const accountEmail = account.email
             this.userData.userName = this.utils.getEmailUsername(accountEmail)
             this.userData.timezoneOffset = String(-new Date().getTimezoneOffset())
+
+            // 记录“正在跑谁”，中断时才能把它标成未完成
+            this.inProgressEmail = accountEmail
+            this.inProgressStartTime = accountStartTime
 
             try {
                 this.logger.info(
@@ -409,6 +477,10 @@ export class MicrosoftRewardsBot {
                     error: error instanceof Error ? error.message : String(error)
                 })
             }
+
+            // 该账号已出结果（成功或失败），快照进中断兜底列表，并清空“正在跑”标记
+            this.completedStats = [...accountStats]
+            this.inProgressEmail = null
         }
 
         if (this.config.clusters <= 1 && cluster.isPrimary) {
@@ -425,16 +497,9 @@ export class MicrosoftRewardsBot {
             )
 
             if (this.config.webhook.wxpusher?.enabled) {
-                const summaries: AccountSummary[] = accountStats.map(s => ({
-                    email: s.email,
-                    collectedPoints: s.collectedPoints,
-                    initialPoints: s.initialPoints,
-                    finalPoints: s.finalPoints,
-                    duration: s.duration,
-                    success: s.success,
-                    error: s.error
-                }))
-                sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
+                // 正常收尾即视为已推送，防止随后的 SIGTERM/beforeExit 再补发一次
+                this.wxSummarySent = true
+                sendWxPusherSummary(this.config.webhook.wxpusher, toAccountSummaries(accountStats))
             }
 
             exportGithubOutput(accountStats, this.config.retryOnLowPoints)
@@ -662,21 +727,25 @@ async function main(): Promise<void> {
     })
     process.on('SIGINT', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGINT received, flushing and exiting...')
+        await rewardsBot.pushSummaryOnInterrupt()
         await flushAllWebhooks()
         process.exit(130)
     })
     process.on('SIGTERM', async () => {
         rewardsBot.logger.warn('main', 'PROCESS', 'SIGTERM received, flushing and exiting...')
+        await rewardsBot.pushSummaryOnInterrupt()
         await flushAllWebhooks()
         process.exit(143)
     })
     process.on('uncaughtException', async error => {
         rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
+        await rewardsBot.pushSummaryOnInterrupt()
         await flushAllWebhooks()
         process.exit(1)
     })
     process.on('unhandledRejection', async reason => {
         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
+        await rewardsBot.pushSummaryOnInterrupt()
         await flushAllWebhooks()
         process.exit(1)
     })

@@ -18,6 +18,13 @@ export interface AccountSummary {
     duration: number
     success: boolean
     error?: string
+    /** 账号还没跑完就被中断（systemd 超时 / 信号），不算成功也不算失败 */
+    incomplete?: boolean
+}
+
+export interface SummaryOptions {
+    /** 这份汇总是进程被中断（如 systemd 超时收到 SIGTERM）时发出的 */
+    interrupted?: boolean
 }
 
 async function sendRaw(config: WebhookWxPusherConfig, content: string, contentType: 1 | 2 | 3): Promise<void> {
@@ -76,28 +83,43 @@ async function sendRaw(config: WebhookWxPusherConfig, content: string, contentTy
 
 export async function sendWxPusherSummary(
     config: WebhookWxPusherConfig,
-    accounts: AccountSummary[]
+    accounts: AccountSummary[],
+    options: SummaryOptions = {}
 ): Promise<void> {
     if (!config?.enabled || !config.appToken || !config.uids?.length) return
+    // 空数组说明一个账号都没跑完，没什么可报的
+    if (!accounts.length) return
 
     const totalCollected = accounts.reduce((sum, a) => sum + a.collectedPoints, 0)
     const totalFinal = accounts.reduce((sum, a) => sum + a.finalPoints, 0)
     const totalDuration = accounts.reduce((sum, a) => sum + a.duration, 0)
-    const successCount = accounts.filter(a => a.success).length
-    const failCount = accounts.filter(a => !a.success).length
+    const successCount = accounts.filter(a => a.success && !a.incomplete).length
+    const failCount = accounts.filter(a => !a.success && !a.incomplete).length
+    const incompleteCount = accounts.filter(a => a.incomplete).length
     const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
 
     const accountRows = accounts
-        .map(
-            a => `
+        .map(a => {
+            const label = a.incomplete ? '未完成' : a.success ? `+${a.collectedPoints}` : '失败'
+            const gainedColor = a.incomplete ? 'color:#f39c12;' : a.success ? 'color:#27ae60;' : 'color:#e74c3c;'
+            const emailColor = a.incomplete || !a.success ? 'color:#e74c3c;' : ''
+            const balance = a.incomplete && !a.initialPoints ? '—' : `${a.initialPoints} → ${a.finalPoints}`
+            return `
         <tr>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;${a.success ? '' : 'color:#e74c3c;'}">${a.email}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;${a.success ? 'color:#27ae60;' : 'color:#e74c3c;'}">${a.success ? '+' + a.collectedPoints : '失败'}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${a.initialPoints} → ${a.finalPoints}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eee;${emailColor}">${a.email}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;${gainedColor}">${label}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${balance}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${(a.duration / 60).toFixed(1)}分</td>
         </tr>`
-        )
+        })
         .join('')
+
+    // 被中断时明确告知，避免「收到了推送=一切正常」的误读
+    const interruptedBanner = options.interrupted
+        ? `<div style="background:#fff7ed;border-left:4px solid #f39c12;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;color:#8a5a00;">
+                <b>⚠️ 本次运行被中断</b>（进程收到终止信号），以下为中断前已完成的账号。${incompleteCount ? `另有 <b>${incompleteCount}</b> 个账号未跑完。` : ''}
+            </div>`
+        : ''
 
     const html = `
     <div style="font-family:'Microsoft YaHei',sans-serif;max-width:600px;margin:0 auto;background:#f5f7fa;padding:20px;">
@@ -106,6 +128,7 @@ export async function sendWxPusherSummary(
             <p style="margin:8px 0 0;opacity:0.9;font-size:13px;">${now}</p>
         </div>
         <div style="background:#fff;padding:20px;border-radius:0 0 12px 12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+            ${interruptedBanner}
             <div style="display:flex;justify-content:space-between;margin-bottom:20px;text-align:center;">
                 <div style="flex:1;padding:10px;background:#f0f9ff;border-radius:8px;margin:0 4px;">
                     <div style="font-size:24px;font-weight:bold;color:#667eea;">${totalCollected}</div>
@@ -121,7 +144,7 @@ export async function sendWxPusherSummary(
                 </div>
             </div>
             <div style="font-size:14px;color:#333;margin-bottom:12px;">
-                账号: <b>${accounts.length}</b> 个 | 成功: <b style="color:#27ae60;">${successCount}</b> | 失败: <b style="color:#e74c3c;">${failCount}</b>
+                账号: <b>${accounts.length}</b> 个 | 成功: <b style="color:#27ae60;">${successCount}</b> | 失败: <b style="color:#e74c3c;">${failCount}</b>${incompleteCount ? ` | 未完成: <b style="color:#f39c12;">${incompleteCount}</b>` : ''}
             </div>
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
                 <thead>
