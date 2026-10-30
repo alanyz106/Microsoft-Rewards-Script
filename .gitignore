@@ -1,4 +1,5 @@
 sessions/
+data/
 dist/
 .dev/
 node_modules/
