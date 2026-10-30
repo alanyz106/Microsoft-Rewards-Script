@@ -209,29 +209,40 @@ export class Workers {
                 x => !x.parentPromotion?.complete && (x.parentPromotion?.pointProgressMax ?? 0) > 0
             ) ?? []
 
-        const punchCardActivities = punchCards.flatMap(x => x.childPromotions)
-
-        const activitiesUncompleted: BasePromotion[] =
-            punchCardActivities?.filter(x => {
+        // 按卡片逐个处理：Quest 子任务必须知道自己属于哪张卡片，
+        // 才能在 /earn/quest/<questId> 详情页里点链接（详见 troubleshooting.md §11）
+        const cardsPending = punchCards.filter(card =>
+            (card.childPromotions ?? []).some(x => {
                 if (x.complete) return false
                 if (x.exclusiveLockedFeatureStatus === 'locked') return false
                 if (!x.promotionType) return false
 
                 return true
-            }) ?? []
+            })
+        )
 
-        if (!activitiesUncompleted.length) {
+        if (!cardsPending.length) {
             this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'All "Punch Card" items have already been completed')
             return
         }
 
-        this.bot.logger.info(
-            this.bot.isMobile,
-            'PUNCHCARD',
-            `Started solving ${activitiesUncompleted.length} "Punch Card" items`
-        )
+        for (const card of cardsPending) {
+            const activitiesUncompleted: BasePromotion[] = (card.childPromotions ?? []).filter(x => {
+                if (x.complete) return false
+                if (x.exclusiveLockedFeatureStatus === 'locked') return false
+                if (!x.promotionType) return false
 
-        await this.solveActivities(activitiesUncompleted, page)
+                return true
+            })
+
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'PUNCHCARD',
+                `Started solving ${activitiesUncompleted.length} "Punch Card" items | quest=${card.name} | title="${card.parentPromotion?.title ?? ''}" | progress=${card.parentPromotion?.pointProgress}/${card.parentPromotion?.pointProgressMax}`
+            )
+
+            await this.solveActivities(activitiesUncompleted, page, card)
+        }
 
         this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'All "Punch Card" items have been completed')
     }
@@ -301,6 +312,26 @@ export class Workers {
                             )
 
                             await this.bot.activities.doSearchOnBing(basePromotion, page)
+                        } else if (punchCard) {
+                            // Quest / Punch Card 子任务：必须在 quest 详情页里点击链接，
+                            // 直接导航 destinationUrl 或点 dashboard 链接都无效（§11）。
+                            this.bot.logger.info(
+                                this.bot.isMobile,
+                                'ACTIVITY',
+                                `Found activity type "QuestActivity" | title="${activity.title}" | offerId=${offerId} | quest=${punchCard.name}`
+                            )
+
+                            const outcome = await this.bot.activities.doQuestActivity(
+                                basePromotion,
+                                page,
+                                punchCard.name
+                            )
+
+                            // Quest 点击没成功（链接锁住 / 页面上找不到）时，退回旧的三层兜底，
+                            // 至少不要让 More Promotions 那套逻辑白丢。
+                            if (outcome === 'notfound') {
+                                await this.bot.activities.doUrlReward(basePromotion, page)
+                            }
                         } else {
                             this.bot.logger.info(
                                 this.bot.isMobile,

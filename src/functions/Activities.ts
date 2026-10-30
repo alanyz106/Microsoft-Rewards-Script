@@ -16,6 +16,8 @@ import { ClaimBonusPoints } from './activities/api/ClaimBonusPoints'
 // Browser
 import { SearchOnBing } from './activities/browser/SearchOnBing'
 import { Search } from './activities/browser/Search'
+import { QuestActivity } from './activities/browser/QuestActivity'
+import type { QuestOutcome } from './activities/browser/QuestActivity'
 
 import type {
     BasePromotion,
@@ -41,6 +43,15 @@ export default class Activities {
     doSearchOnBing = async (promotion: BasePromotion, page: Page): Promise<void> => {
         const searchOnBing = new SearchOnBing(this.bot)
         await searchOnBing.doSearchOnBing(promotion, page)
+    }
+
+    /**
+     * Quest / Punch Card 子任务：必须在 quest 详情页里点击链接才算完成，
+     * 直接导航 destinationUrl 无效（详见 memory/troubleshooting.md §11）。
+     */
+    doQuestActivity = async (promotion: BasePromotion, page: Page, questId: string): Promise<QuestOutcome> => {
+        const questActivity = new QuestActivity(this.bot)
+        return await questActivity.doQuestActivity(promotion, page, questId)
     }
 
     /*
