@@ -23,6 +23,13 @@ interface BrowserCreationResult {
 
 class Browser {
     private readonly bot: MicrosoftRewardsBot
+    // 还活着的浏览器实例。正常路径上每个账号自己会关，这里登记只是为了在
+    // 「单账号超时被放弃」时能一次性收尸（见 closeAllBrowsers）。
+    private readonly liveBrowsers = new Set<rebrowser.Browser>()
+    // 「清场」代数。超时放弃账号时自增，用来识别「清场之后才启动完成的幽灵浏览器」：
+    // 超时正好卡在 launch 中间时，closeAllBrowsers 那一刻它还不在 liveBrowsers 里，
+    // 不挡住就会留下一个没人管的 Chromium 吃内存。
+    private cleanupEpoch = 0
     private static readonly BROWSER_ARGS = [
         '--no-sandbox',
         '--mute-audio',
@@ -44,6 +51,7 @@ class Browser {
     }
 
     async createBrowser(account: Account): Promise<BrowserCreationResult> {
+        const epochAtStart = this.cleanupEpoch
         let browser: rebrowser.Browser
         try {
             const proxyConfig = account.proxy.url
@@ -73,6 +81,12 @@ class Browser {
                 ...(proxyConfig && { proxy: proxyConfig }),
                 args: [...Browser.BROWSER_ARGS]
             })
+            // 清场之后才启动完成的「幽灵浏览器」：直接关掉，别让它跟着下一个账号活
+            if (epochAtStart !== this.cleanupEpoch) {
+                await browser.close().catch(() => {})
+                throw new Error('Browser launch raced with an account timeout; aborted')
+            }
+            this.liveBrowsers.add(browser)
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error)
             this.bot.logger.error(this.bot.isMobile, 'BROWSER', `Launch failed: ${errorMessage}`)
@@ -117,6 +131,7 @@ class Browser {
             let closingIntentionally = false
 
             browser.on('disconnected', () => {
+                this.liveBrowsers.delete(browser)
                 if (closingIntentionally) {
                     this.bot.logger.debug(
                         this.bot.isMobile,
@@ -180,6 +195,31 @@ class Browser {
             await browser.close().catch(() => {})
             throw error
         }
+    }
+
+    /**
+     * 强制关掉所有还活着的浏览器。
+     *
+     * 只在「单账号超时被放弃」这种异常路径调用：那个卡死的账号已经把浏览器搞到
+     * 不响应了，单靠 Promise 超时只是让循环继续，Chromium 还在占内存（本机 1.8G，
+     * 两个实例就会进 swap）。这里一并收尸，保证下一个账号拿到干净环境。
+     * 每个 close 再套 15s 上限，避免连关闭动作本身也挂住。
+     */
+    async closeAllBrowsers(reason: string): Promise<void> {
+        this.cleanupEpoch++
+        const browsers = [...this.liveBrowsers]
+        this.liveBrowsers.clear()
+        if (!browsers.length) return
+
+        this.bot.logger.warn('main', 'BROWSER-CLEANUP', `Closing ${browsers.length} live browser(s) | ${reason}`)
+        await Promise.allSettled(
+            browsers.map(async b => {
+                await Promise.race([
+                    b.close().catch(() => {}),
+                    new Promise<void>(resolve => setTimeout(resolve, 15000))
+                ])
+            })
+        )
     }
 
     private formatProxyServer(proxy: AccountProxy): string {

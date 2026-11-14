@@ -411,8 +411,30 @@ export class MicrosoftRewardsBot {
         }
     }
 
+    /**
+     * 单账号硬超时（毫秒）。默认 90 分钟，可用环境变量 ACCOUNT_TIMEOUT_MINUTES 覆盖
+     * （systemd 里就写 Environment=ACCOUNT_TIMEOUT_MINUTES=90，改完 daemon-reload）。
+     *
+     * 为什么必须有：2026-11-13 事故里，账号 2368652476 的 desktop「Bing 会话校验」
+     * 卡在一个永不返回的 Playwright 调用上，而账号循环是裸的 `for … await Main()`
+     * （没有任何超时），于是整个串行任务陪着空转 5h27m，直到 systemd 的 10h 上限
+     * 把整个任务杀掉，后面 3 个账号当天一次都没跑（详见 memory/run.md）。
+     * 正常账号 35–50 分钟，90 分钟留了约 2 倍余量。
+     */
+    private accountTimeoutMs(): number {
+        const minutes = Number(process.env.ACCOUNT_TIMEOUT_MINUTES ?? '90')
+        const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 90
+        return safe * 60_000
+    }
+
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
+        const accountTimeoutMs = this.accountTimeoutMs()
+        this.logger.info(
+            'main',
+            'RUN-TIMEOUT',
+            `单账号硬超时: ${Number((accountTimeoutMs / 60000).toFixed(1))} 分钟（超时放弃该账号、关掉它的浏览器，继续下一个）`
+        )
         // 分组模式：记下开跑前的全局节点，全部跑完后还原，避免人工补跑/试运行
         // 把 mihomo 的面板选中节点永久改掉（单账号补跑尤其容易留下意外状态）。
         let originalNode: string | undefined
@@ -460,16 +482,49 @@ export class MicrosoftRewardsBot {
                 this.axios = new AxiosClient(account.proxy)
                 await this.checkAndLogProxy(account)
 
-                const result: { initialPoints: number; collectedPoints: number } | undefined = await this.Main(
-                    account
-                ).catch(error => {
-                    void this.logger.error(
-                        true,
-                        'FLOW',
-                        `Mobile flow failed for ${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
+                const ACCOUNT_TIMEOUT = Symbol('account-timeout')
+                let timeoutHandle: NodeJS.Timeout | undefined
+                const raced = await Promise.race([
+                    this.Main(account).catch(error => {
+                        void this.logger.error(
+                            true,
+                            'FLOW',
+                            `Mobile flow failed for ${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
+                        )
+                        return undefined
+                    }),
+                    new Promise<typeof ACCOUNT_TIMEOUT>(resolve => {
+                        timeoutHandle = setTimeout(() => resolve(ACCOUNT_TIMEOUT), accountTimeoutMs)
+                    })
+                ])
+                if (timeoutHandle) clearTimeout(timeoutHandle)
+
+                // 超时：放弃这个账号，关掉它留下的浏览器，继续下一个 ——
+                // 绝不能再让一个号把后面所有号的时间吃光（2026-11-13 事故）
+                if (raced === ACCOUNT_TIMEOUT) {
+                    const timeoutMinutes = Number((accountTimeoutMs / 60000).toFixed(1))
+                    const timeoutSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
+                    this.logger.error(
+                        'main',
+                        'ACCOUNT-TIMEOUT',
+                        `${accountEmail} 超过 ${timeoutMinutes} 分钟没有返回，放弃该账号并继续下一个（多半是 Playwright 调用挂死）| Duration: ${timeoutSeconds}s`
                     )
-                    return undefined
-                })
+                    await this.browserFactory.closeAllBrowsers(`account timeout: ${accountEmail}`).catch(() => {})
+                    accountStats.push({
+                        email: accountEmail,
+                        initialPoints: 0,
+                        finalPoints: 0,
+                        collectedPoints: 0,
+                        duration: parseFloat(timeoutSeconds),
+                        success: false,
+                        error: `timeout ${timeoutMinutes}min`
+                    })
+                    this.completedStats = [...accountStats]
+                    this.inProgressEmail = null
+                    continue
+                }
+
+                const result: { initialPoints: number; collectedPoints: number } | undefined = raced
 
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
 
