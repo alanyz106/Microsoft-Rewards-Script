@@ -25,6 +25,11 @@ export interface AccountSummary {
 export interface SummaryOptions {
     /** 这份汇总是进程被中断（如 systemd 超时收到 SIGTERM）时发出的 */
     interrupted?: boolean
+    /**
+     * 卡片抬头。缺省为「Microsoft Rewards 运行报告」（日常主任务原样文案），
+     * 查漏补缺（gapfill）传自己的标题以区分两份推送。不传则与改动前完全一致。
+     */
+    title?: string
 }
 
 async function sendRaw(config: WebhookWxPusherConfig, content: string, contentType: 1 | 2 | 3): Promise<void> {
@@ -124,7 +129,7 @@ export async function sendWxPusherSummary(
     const html = `
     <div style="font-family:'Microsoft YaHei',sans-serif;max-width:600px;margin:0 auto;background:#f5f7fa;padding:20px;">
         <div style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:20px;border-radius:12px 12px 0 0;text-align:center;">
-            <h2 style="margin:0;font-size:20px;">Microsoft Rewards 运行报告</h2>
+            <h2 style="margin:0;font-size:20px;">${options.title ?? 'Microsoft Rewards 运行报告'}</h2>
             <p style="margin:8px 0 0;opacity:0.9;font-size:13px;">${now}</p>
         </div>
         <div style="background:#fff;padding:20px;border-radius:0 0 12px 12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
