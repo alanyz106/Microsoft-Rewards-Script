@@ -29,6 +29,23 @@ import type { AccountSummary } from './logging/WxPusher'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
 
+// 账号分组 → mihomo 出口节点。运行期 require .dev/ 模块，主任务与查漏补缺共用一份配置。
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const nodeSwitch = require('../.dev/node-switch.js') as {
+    ensureNodeForAccount: (email: string, log: (msg: string) => void) => Promise<{ node: string; group: string; changed: boolean }>
+    getNow: (cfg: unknown, group?: string) => Promise<string | undefined>
+    restore: (node: string | undefined, log: (msg: string) => void) => Promise<void>
+    config: () => { enabled: boolean; selectorGroup: string; restoreOnExit?: boolean }
+}
+
+/** 分组模式要求 clusters=1：mihomo 只有一个全局出口，多进程并行会互相切节点串 IP。 */
+function assertNodeSwitchSafe(configClusters: number): void {
+    if (nodeSwitch.config().enabled && configClusters > 1) {
+        throw new Error('[NODE] 分组节点模式与 clusters>1 不兼容：多个 worker 会互相切换同一个 mihomo 全局节点。请把 config.json 的 clusters 设为 1 或关闭 proxy-groups.json 的 enabled。')
+    }
+}
+
+
 interface ExecutionContext {
     isMobile: boolean
     account: Account
@@ -176,6 +193,8 @@ export class MicrosoftRewardsBot {
     async run(): Promise<void> {
         const totalAccounts = this.accounts.length
         const runStartTime = Date.now()
+
+        assertNodeSwitchSafe(this.config.clusters)
 
         this.logger.info(
             'main',
@@ -394,7 +413,18 @@ export class MicrosoftRewardsBot {
 
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
+        // 分组模式：记下开跑前的全局节点，全部跑完后还原，避免人工补跑/试运行
+        // 把 mihomo 的面板选中节点永久改掉（单账号补跑尤其容易留下意外状态）。
+        let originalNode: string | undefined
+        if (nodeSwitch.config().enabled) {
+            try {
+                originalNode = await nodeSwitch.getNow(nodeSwitch.config(), nodeSwitch.config().selectorGroup)
+            } catch (e) {
+                throw new Error(`[NODE] 读取当前节点失败: ${e instanceof Error ? e.message : String(e)}`)
+            }
+        }
 
+        try {
         for (const account of accounts) {
             const accountStartTime = Date.now()
             const accountEmail = account.email
@@ -411,6 +441,21 @@ export class MicrosoftRewardsBot {
                     'ACCOUNT-START',
                     `Starting account: ${accountEmail} | geoLocale: ${account.geoLocale}`
                 )
+
+                // 每个账号开始前按分组切换 mihomo 出口节点（切换失败直接让本账号失败，
+                // 绝不在错误节点下跑：MSA 对 IP 与登录态一致性敏感）。
+                // 这样无论全量清单顺序、单账号补跑、SOP 试运行都自动用对节点。
+                if (nodeSwitch.config().enabled) {
+                    const r = await nodeSwitch.ensureNodeForAccount(accountEmail, (m: string) =>
+                        this.logger.info('main', 'NODE', m)
+                    )
+                    this.logger.info(
+                        'main',
+                        'NODE',
+                        `分组=${r.group} | 节点=${r.node} | ${accountEmail}`,
+                        'cyan'
+                    )
+                }
 
                 this.axios = new AxiosClient(account.proxy)
                 await this.checkAndLogProxy(account)
@@ -481,6 +526,10 @@ export class MicrosoftRewardsBot {
             // 该账号已出结果（成功或失败），快照进中断兜底列表，并清空“正在跑”标记
             this.completedStats = [...accountStats]
             this.inProgressEmail = null
+        }
+        } finally {
+            // 全部账号跑完（或异常中断）都还原到开跑前的节点
+            await nodeSwitch.restore(originalNode, (m: string) => this.logger.info('main', 'NODE', m))
         }
 
         if (this.config.clusters <= 1 && cluster.isPrimary) {
