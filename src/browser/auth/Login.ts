@@ -683,10 +683,10 @@ export class Login {
         }
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting Bing session verification')
-        await this.verifyBingSession(page)
+        await this.withDeadline('Bing 会话校验', 120_000, () => this.verifyBingSession(page), undefined)
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting rewards session verification')
-        await this.getRewardsSession(page)
+        await this.withDeadline('Rewards 会话校验', 120_000, () => this.getRewardsSession(page), undefined)
 
         const browser = page.context()
         const cookies = await browser.cookies()
@@ -694,6 +694,45 @@ export class Login {
         await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Login completed, session saved')
+    }
+
+    /**
+     * 给登录收尾阶段的子流程加硬上限。
+     *
+     * verifyBingSession / getRewardsSession 里有若干**没有超时**的 Playwright 调用
+     * （page.title()、ghost-cursor 的 addInitScript / boundingBox / evaluate），
+     * 一旦 CDP 调用不返回，整个串行任务就永远停在这里（2026-11-13 事故：账号
+     * 2368652476 在这两步上挂了 5h27m，直到 systemd 10h 上限杀掉整个任务）。
+     * 这两步只是「校验会话 / 取 token」，失败本来就有 warn 分支、不阻断主流程，
+     * 所以超时就直接放行，让任务继续。
+     */
+    private async withDeadline<T>(label: string, ms: number, task: () => Promise<T>, fallback: T): Promise<T> {
+        let handle: NodeJS.Timeout | undefined
+        const timeout = new Promise<T>(resolve => {
+            handle = setTimeout(() => {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'LOGIN-TIMEOUT',
+                    `${label} 超过 ${Math.round(ms / 1000)}s 未返回，跳过继续（不再无限等待）`
+                )
+                resolve(fallback)
+            }, ms)
+        })
+        // task() 若在超时之后才 reject，会变成 unhandled rejection（Node 24 会直接崩），
+        // 所以这里统一 catch 掉，race 的永远是「不会 reject 的包装」。
+        const guarded = task().catch(error => {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'LOGIN-TIMEOUT',
+                `${label} 出错: ${error instanceof Error ? error.message : String(error)}`
+            )
+            return fallback
+        })
+        try {
+            return await Promise.race([guarded, timeout])
+        } finally {
+            if (handle) clearTimeout(handle)
+        }
     }
 
     async verifyBingSession(page: Page) {
