@@ -20,6 +20,9 @@ export interface AccountSummary {
     error?: string
     /** 账号还没跑完就被中断（systemd 超时 / 信号），不算成功也不算失败 */
     incomplete?: boolean
+    /** 本次运行该账号走的 mihomo 分组与出口节点（卡片里显示在邮箱下方） */
+    proxyGroup?: string
+    proxyNode?: string
 }
 
 export interface SummaryOptions {
@@ -86,6 +89,29 @@ async function sendRaw(config: WebhookWxPusherConfig, content: string, contentTy
     })
 }
 
+/**
+ * 节点名太长（如「🇺🇲 美国Y01 | IEPL | x1.5」），推送卡片在手机上放不下，
+ * 只取竖线前的「地区 + 编号」部分；并去掉前面的国旗 emoji——群里/桌面端缺彩色 emoji 字体时
+ * 会显示成方框，节点本身已经带了地区名，国旗不是必须的。取不到就原样返回。
+ */
+function shortNodeName(node?: string): string | undefined {
+    if (!node) return undefined
+    const short = node
+        .split('|')[0]
+        ?.trim()
+        .replace(/^[^\p{L}\p{N}]+/u, '')
+    return short || node
+}
+
+/** 邮箱下方的节点小字：`美国1 · 🇺🇲 美国Y01`；没有节点信息就不占位置 */
+function nodeSubline(account: AccountSummary): string {
+    const node = shortNodeName(account.proxyNode)
+    if (!node) return ''
+    const group = account.proxyGroup?.trim()
+    const text = group ? `${group} · ${node}` : node
+    return `<div style="font-size:11px;color:#8a94a6;margin-top:2px;font-weight:normal;">${text}</div>`
+}
+
 export async function sendWxPusherSummary(
     config: WebhookWxPusherConfig,
     accounts: AccountSummary[],
@@ -95,13 +121,24 @@ export async function sendWxPusherSummary(
     // 空数组说明一个账号都没跑完，没什么可报的
     if (!accounts.length) return
 
+    await sendRaw(config, buildSummaryHtml(accounts, options), 2)
+}
+
+/**
+ * 生成汇总卡片的 HTML（与发送解耦，便于单测）。
+ * 每个账号在邮箱下面多显示一行「分组 · 节点」，方便一眼看出哪个号走了哪个出口。
+ */
+export function buildSummaryHtml(
+    accounts: AccountSummary[],
+    options: SummaryOptions = {},
+    now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+): string {
     const totalCollected = accounts.reduce((sum, a) => sum + a.collectedPoints, 0)
     const totalFinal = accounts.reduce((sum, a) => sum + a.finalPoints, 0)
     const totalDuration = accounts.reduce((sum, a) => sum + a.duration, 0)
     const successCount = accounts.filter(a => a.success && !a.incomplete).length
     const failCount = accounts.filter(a => !a.success && !a.incomplete).length
     const incompleteCount = accounts.filter(a => a.incomplete).length
-    const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
 
     const accountRows = accounts
         .map(a => {
@@ -111,7 +148,7 @@ export async function sendWxPusherSummary(
             const balance = a.incomplete && !a.initialPoints ? '—' : `${a.initialPoints} → ${a.finalPoints}`
             return `
         <tr>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;${emailColor}">${a.email}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eee;${emailColor}"><div>${a.email}</div>${nodeSubline(a)}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;${gainedColor}">${label}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${balance}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${(a.duration / 60).toFixed(1)}分</td>
@@ -167,7 +204,7 @@ export async function sendWxPusherSummary(
         </div>
     </div>`
 
-    await sendRaw(config, html, 2)
+    return html
 }
 
 export async function flushWxPusherQueue(timeoutMs = 5000): Promise<void> {

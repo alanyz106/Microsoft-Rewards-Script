@@ -87,8 +87,17 @@ export default class BrowserFunc {
     /**
      * Fetch user desktop dashboard data
      * @returns {DashboardData} Object of user bing rewards dashboard data
+     *
+     * 出网抖动兜底（2026-11-18）：仪表盘数据是搜索、签到、末尾记账的前提，
+     * 遇到 TLS 断连/连接重置这类通常会自己好的错误时，按 2 分钟节奏探测节点，
+     * 恢复后重取，而不是把整个账号判失败。
      */
     async getDashboardData(): Promise<DashboardData> {
+        return await this.bot.networkRecovery.run('GET-DASHBOARD-DATA', () => this.fetchDashboardData())
+    }
+
+    /** 真正取仪表盘数据的实现（API + HTML 兜底），恢复等待逻辑在外层 getDashboardData */
+    private async fetchDashboardData(): Promise<DashboardData> {
         try {
             const request: AxiosRequestConfig = {
                 url: 'https://rewards.bing.com/api/getuserinfo?type=1',

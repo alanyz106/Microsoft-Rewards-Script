@@ -8,6 +8,7 @@ import type { AccountProxy } from '../interface/Account'
 
 class AxiosClient {
     private instance: AxiosInstance
+    private probeInstance: AxiosInstance
     private account: AccountProxy
 
     constructor(account: AccountProxy) {
@@ -17,10 +18,19 @@ class AxiosClient {
             timeout: 20000
         })
 
+        // 探测专用实例：不做 axios-retry。
+        // 出网抖动恢复时要的是「此刻通不通」的快速判断，如果沿用带 5 次退避重试的实例，
+        // 单次探测可能拖到 1 分钟以上，2 分钟一次的探测节奏就名存实亡了。
+        this.probeInstance = axios.create({
+            timeout: 15000
+        })
+
         if (this.account.url && this.account.proxyAxios) {
             const { httpAgent, httpsAgent } = this.getAgentsForProxy(this.account)
             this.instance.defaults.httpAgent = httpAgent
             this.instance.defaults.httpsAgent = httpsAgent
+            this.probeInstance.defaults.httpAgent = httpAgent
+            this.probeInstance.defaults.httpsAgent = httpsAgent
         }
 
         axiosRetry(this.instance, {
@@ -100,6 +110,14 @@ class AxiosClient {
         }
 
         return this.instance.request(config)
+    }
+
+    /**
+     * 单次探测请求：走同一个账号代理，但不带重试。
+     * 仅供出网抖动恢复逻辑判断「节点此刻是否已恢复」，不要用于业务请求。
+     */
+    public async requestForProbe(config: AxiosRequestConfig): Promise<AxiosResponse> {
+        return this.probeInstance.request(config)
     }
 }
 

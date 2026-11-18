@@ -19,6 +19,7 @@ import { Login } from './browser/auth/Login'
 import { Workers } from './functions/Workers'
 import Activities from './functions/Activities'
 import { SearchManager } from './functions/SearchManager'
+import { isTransientNetworkError, NetworkRecovery } from './functions/NetworkRecovery'
 
 import type { Account } from './interface/Account'
 import AxiosClient from './util/Axios'
@@ -64,6 +65,9 @@ interface AccountStats {
     duration: number
     success: boolean
     error?: string
+    /** 本次运行该账号走的 mihomo 分组与出口节点（推送里展示，便于定位节点问题） */
+    proxyGroup?: string
+    proxyNode?: string
 }
 
 function exportGithubOutput(stats: AccountStats[], retryOnLowPoints: boolean): void {
@@ -102,7 +106,9 @@ function toAccountSummaries(stats: AccountStats[]): AccountSummary[] {
         finalPoints: s.finalPoints,
         duration: s.duration,
         success: s.success,
-        error: s.error
+        error: s.error,
+        proxyGroup: s.proxyGroup,
+        proxyNode: s.proxyNode
     }))
 }
 
@@ -146,6 +152,12 @@ export class MicrosoftRewardsBot {
     private searchManager: SearchManager
 
     /**
+     * 出网抖动兜底：节点中途连不上时按 2 分钟节奏探测，恢复后继续未完成的步骤。
+     * 每个账号开始时 reset()，等待预算按账号计。
+     */
+    public networkRecovery: NetworkRecovery
+
+    /**
      * 中断兜底用的进度快照。
      * 为什么需要：推送原本只在「所有账号跑完」时发一次，账号卡住/超时被杀时
      * 一条都发不出去，等同于静默失败。这里记录已完成账号，收到信号时可补发。
@@ -153,6 +165,9 @@ export class MicrosoftRewardsBot {
     private completedStats: AccountStats[] = []
     private inProgressEmail: string | null = null
     private inProgressStartTime = 0
+    /** 正在跑那个账号用的节点：中断推送时也要能标出来 */
+    private inProgressProxyGroup: string | undefined
+    private inProgressProxyNode: string | undefined
     private wxSummarySent = false
 
     public axios!: AxiosClient
@@ -173,6 +188,7 @@ export class MicrosoftRewardsBot {
         this.utils = new Utils()
         this.workers = new Workers(this)
         this.searchManager = new SearchManager(this)
+        this.networkRecovery = new NetworkRecovery(this)
         this.browser = {
             func: new BrowserFunc(this),
             utils: new BrowserUtils(this)
@@ -289,16 +305,7 @@ export class MicrosoftRewardsBot {
                 )
 
                 if (this.config.webhook.wxpusher?.enabled) {
-                    const summaries: AccountSummary[] = allAccountStats.map(s => ({
-                        email: s.email,
-                        collectedPoints: s.collectedPoints,
-                        initialPoints: s.initialPoints,
-                        finalPoints: s.finalPoints,
-                        duration: s.duration,
-                        success: s.success,
-                        error: s.error
-                    }))
-                    sendWxPusherSummary(this.config.webhook.wxpusher, summaries)
+                    sendWxPusherSummary(this.config.webhook.wxpusher, toAccountSummaries(allAccountStats))
                 }
 
                 exportGithubOutput(allAccountStats, this.config.retryOnLowPoints)
@@ -391,7 +398,9 @@ export class MicrosoftRewardsBot {
                 duration: (Date.now() - this.inProgressStartTime) / 1000,
                 success: false,
                 error: '运行被中断',
-                incomplete: true
+                incomplete: true,
+                proxyGroup: this.inProgressProxyGroup,
+                proxyNode: this.inProgressProxyNode
             })
         }
         if (!summaries.length) {
@@ -430,6 +439,7 @@ export class MicrosoftRewardsBot {
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
         const accountTimeoutMs = this.accountTimeoutMs()
+        this.logger.info('main', 'NETWORK-JITTER', this.networkRecovery.describe())
         this.logger.info(
             'main',
             'RUN-TIMEOUT',
@@ -456,6 +466,12 @@ export class MicrosoftRewardsBot {
             // 记录“正在跑谁”，中断时才能把它标成未完成
             this.inProgressEmail = accountEmail
             this.inProgressStartTime = accountStartTime
+            this.inProgressProxyGroup = undefined
+            this.inProgressProxyNode = undefined
+
+            // 本账号实际使用的节点：切换成功后立刻记下，后面无论成功/失败/超时都带进推送
+            let accountProxyGroup: string | undefined
+            let accountProxyNode: string | undefined
 
             try {
                 this.logger.info(
@@ -464,6 +480,9 @@ export class MicrosoftRewardsBot {
                     `Starting account: ${accountEmail} | geoLocale: ${account.geoLocale}`
                 )
 
+                // 出网抖动等待预算按账号计：上一个号把额度用完不影响下一个号
+                this.networkRecovery.reset()
+
                 // 每个账号开始前按分组切换 mihomo 出口节点（切换失败直接让本账号失败，
                 // 绝不在错误节点下跑：MSA 对 IP 与登录态一致性敏感）。
                 // 这样无论全量清单顺序、单账号补跑、SOP 试运行都自动用对节点。
@@ -471,6 +490,10 @@ export class MicrosoftRewardsBot {
                     const r = await nodeSwitch.ensureNodeForAccount(accountEmail, (m: string) =>
                         this.logger.info('main', 'NODE', m)
                     )
+                    accountProxyGroup = r.group
+                    accountProxyNode = r.node
+                    this.inProgressProxyGroup = r.group
+                    this.inProgressProxyNode = r.node
                     this.logger.info(
                         'main',
                         'NODE',
@@ -517,10 +540,14 @@ export class MicrosoftRewardsBot {
                         collectedPoints: 0,
                         duration: parseFloat(timeoutSeconds),
                         success: false,
-                        error: `timeout ${timeoutMinutes}min`
+                        error: `timeout ${timeoutMinutes}min`,
+                        proxyGroup: accountProxyGroup,
+                        proxyNode: accountProxyNode
                     })
                     this.completedStats = [...accountStats]
                     this.inProgressEmail = null
+                    this.inProgressProxyGroup = undefined
+                    this.inProgressProxyNode = undefined
                     continue
                 }
 
@@ -539,7 +566,9 @@ export class MicrosoftRewardsBot {
                         finalPoints: accountFinalPoints,
                         collectedPoints: collectedPoints,
                         duration: parseFloat(durationSeconds),
-                        success: true
+                        success: true,
+                        proxyGroup: accountProxyGroup,
+                        proxyNode: accountProxyNode
                     })
 
                     this.logger.info(
@@ -556,7 +585,9 @@ export class MicrosoftRewardsBot {
                         collectedPoints: 0,
                         duration: parseFloat(durationSeconds),
                         success: false,
-                        error: 'Flow failed'
+                        error: 'Flow failed',
+                        proxyGroup: accountProxyGroup,
+                        proxyNode: accountProxyNode
                     })
                 }
             } catch (error) {
@@ -574,13 +605,17 @@ export class MicrosoftRewardsBot {
                     collectedPoints: 0,
                     duration: parseFloat(durationSeconds),
                     success: false,
-                    error: error instanceof Error ? error.message : String(error)
+                    error: error instanceof Error ? error.message : String(error),
+                    proxyGroup: accountProxyGroup,
+                    proxyNode: accountProxyNode
                 })
             }
 
             // 该账号已出结果（成功或失败），快照进中断兜底列表，并清空“正在跑”标记
             this.completedStats = [...accountStats]
             this.inProgressEmail = null
+            this.inProgressProxyGroup = undefined
+            this.inProgressProxyNode = undefined
         }
         } finally {
             // 全部账号跑完（或异常中断）都还原到开跑前的节点
@@ -660,6 +695,14 @@ export class MicrosoftRewardsBot {
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error)
             this.logger.warn('main', 'PROXY', `Proxy probe test failed: ${errMsg} (will continue execution)`)
+
+            // 账号开跑前节点就不通时，先等它恢复，别急着重启一个注定失败的浏览器会话。
+            // 探测走 bing（probeOnce）：如果只是 ip-api 挂了而 rewards 可达，第一次探测就会直接放行。
+            // 只对「出网抖动」等待；代理认证错误之类的配置问题不在恢复范围内。
+            if (isTransientNetworkError(error)) {
+                // 只等 15 分钟：节点整晚不通时不能让每个账号都在起跑线干等 30 分钟
+                await this.networkRecovery.waitForProxy('ACCOUNT-PROXY', 15 * 60_000)
+            }
         }
     }
 
@@ -793,7 +836,29 @@ export class MicrosoftRewardsBot {
 
                 this.userData.gainedPoints = mobilePoints + desktopPoints
 
-                const finalPoints = await this.browser.func.getCurrentPoints()
+                // 末尾记账同样受出网抖动影响（2026-11-17 就是这一行抛错把整号记成失败的）。
+                // 先用恢复兜底重试；预算内仍查不到时退回本地累计值，绝不把已到账的分记成 0。
+                let finalPoints: number
+                try {
+                    finalPoints = await this.networkRecovery.run('FLOW-FINAL-POINTS', () =>
+                        this.browser.func.getCurrentPoints()
+                    )
+                } catch (error) {
+                    if (!isTransientNetworkError(error)) throw error
+
+                    const localPoints = Math.max(
+                        Number(this.userData.currentPoints ?? 0),
+                        initialPoints + Number(this.userData.gainedPoints ?? 0)
+                    )
+                    this.logger.warn(
+                        'main',
+                        'FLOW-FINAL-POINTS',
+                        `余额查询在恢复预算内仍未成功，改用本地累计余额记分：${localPoints}（真实值可能略高）| message=${
+                            error instanceof Error ? error.message : String(error)
+                        }`
+                    )
+                    finalPoints = localPoints
+                }
                 const collectedPoints = finalPoints - initialPoints
 
                 this.logger.info(

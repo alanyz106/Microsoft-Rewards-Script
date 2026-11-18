@@ -4,13 +4,14 @@ import type { Counters, DashboardData } from '../../../interface/DashboardData'
 
 import { QueryCore } from '../../QueryEngine'
 import { Workers } from '../../Workers'
+import { isTransientNetworkError } from '../../NetworkRecovery'
 
 export class Search extends Workers {
     private bingHome = 'https://bing.com'
     private searchPageURL = ''
     private searchCount = 0
 
-    public async doSearch(data: DashboardData, page: Page, isMobile: boolean): Promise<number> {
+    public async doSearch(data: DashboardData, page: Page, isMobile: boolean, retried = false): Promise<number> {
         const startBalance = Number(this.bot.userData.currentPoints ?? 0)
 
         this.bot.logger.info(isMobile, 'SEARCH-BING', `Starting Bing searches | currentPoints=${startBalance}`)
@@ -33,6 +34,12 @@ export class Search extends Workers {
                 'SEARCH-BING',
                 `Search points remaining | Edge=${missingPoints.edgePoints} | Desktop=${missingPoints.desktopPoints} | Mobile=${missingPoints.mobilePoints}`
             )
+
+            // 重试路径会重新读一次计数器：如果上一次其实已经拿满，就别再白搜一轮
+            if (missingPointsTotal <= 0) {
+                this.bot.logger.info(isMobile, 'SEARCH-BING', 'No search points missing, skipping search loop')
+                return totalGainedPoints
+            }
 
             const queryCore = new QueryCore(this.bot)
             const locale = (this.bot.userData.geoLocale ?? 'US').toUpperCase()
@@ -253,12 +260,35 @@ export class Search extends Workers {
 
             return totalGainedPoints
         } catch (error) {
-            this.bot.logger.error(
-                isMobile,
-                'SEARCH-BING',
-                `Error in doSearch | message=${error instanceof Error ? error.message : String(error)}`
-            )
+            const message = error instanceof Error ? error.message : String(error)
+
+            // 搜索中途节点掉线：等节点恢复后把剩余积分补完。
+            // 只重试一次（retried），避免「一直抖一直重跑」；页面已死时重试没有意义。
+            if (!retried && isTransientNetworkError(error) && this.isPageAlive(page)) {
+                this.bot.logger.warn(
+                    isMobile,
+                    'SEARCH-BING',
+                    `搜索遇到出网抖动：${message}；先不放弃，等待节点恢复后继续剩余搜索`
+                )
+                const recovered = await this.bot.networkRecovery.waitForProxy('SEARCH-BING')
+                if (recovered) {
+                    this.bot.logger.info(isMobile, 'SEARCH-BING', '节点已恢复，重跑搜索以补齐剩余积分')
+                    const extraPoints = await this.doSearch(data, page, isMobile, true)
+                    return totalGainedPoints + extraPoints
+                }
+            }
+
+            this.bot.logger.error(isMobile, 'SEARCH-BING', `Error in doSearch | message=${message}`)
             return totalGainedPoints
+        }
+    }
+
+    /** 页面还活着才值得重试；浏览器崩了等节点恢复也没用（见 troubleshooting §9） */
+    private isPageAlive(page: Page): boolean {
+        try {
+            return !page.isClosed()
+        } catch {
+            return false
         }
     }
 
