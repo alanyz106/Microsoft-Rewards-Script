@@ -65,11 +65,23 @@ interface AccountStats {
     duration: number
     success: boolean
     error?: string
+    /** 跑完了但没拿满（丢分）/ 没跑完（超时）：外层据此挑账号单独补跑 */
+    incomplete?: boolean
     /** 本次运行该账号走的 mihomo 分组与出口节点（推送里展示，便于定位节点问题） */
     proxyGroup?: string
     proxyNode?: string
 }
 
+/**
+ * 把本次运行结果写给外层脚本（.dev/run-daily.sh），JSON 一行。
+ *
+ * 用途是「主任务结束后、查漏补缺之前，把有问题的那几个号单独补跑一遍」：
+ * 哪些号算有问题，只有进程内知道（超时、流程失败、跑完但丢分、余额没查到），
+ * 外层 shell 从 stdout 里抠是抠不准的（2026-11-19 那一行 `Collected: +-1006`
+ * 就是超时路径漏出来的僵尸日志）。所以这里结构化落盘。
+ *
+ * 仍然保留 `need_retry=`，兼容旧的「全部 < 200 分就整轮重跑」开关。
+ */
 function exportGithubOutput(stats: AccountStats[], retryOnLowPoints: boolean): void {
     const outputPath = process.env.GITHUB_OUTPUT
     if (!outputPath) return
@@ -78,6 +90,23 @@ function exportGithubOutput(stats: AccountStats[], retryOnLowPoints: boolean): v
         // 仅在配置开关打开时才参与「积分未满 200 就重跑」判定；关闭时恒为 false，外层脚本不会重跑
         const anyAccountBelow200 = retryOnLowPoints && stats.some(s => s.collectedPoints < 200)
         fs.appendFileSync(outputPath, `need_retry=${anyAccountBelow200 ? 'true' : 'false'}\n`)
+
+        // 需要单独补跑的账号：失败（超时/流程异常）或跑完但没拿满
+        const needRerun = stats
+            .filter(s => !s.success || s.incomplete)
+            .map(s => ({
+                email: s.email,
+                reason: s.error ?? (s.incomplete ? 'incomplete' : 'failed'),
+                initialPoints: s.initialPoints,
+                finalPoints: s.finalPoints,
+                collectedPoints: s.collectedPoints,
+                proxyGroup: s.proxyGroup,
+                proxyNode: s.proxyNode
+            }))
+        fs.writeFileSync(
+            `${outputPath}.rerun.json`,
+            JSON.stringify({ at: new Date().toISOString(), runPoints: stats, needRerun }, null, 2) + '\n'
+        )
     } catch {
         // ignore if not writable
     }
@@ -107,6 +136,7 @@ function toAccountSummaries(stats: AccountStats[]): AccountSummary[] {
         duration: s.duration,
         success: s.success,
         error: s.error,
+        incomplete: s.incomplete,
         proxyGroup: s.proxyGroup,
         proxyNode: s.proxyNode
     }))
@@ -168,6 +198,18 @@ export class MicrosoftRewardsBot {
     /** 正在跑那个账号用的节点：中断推送时也要能标出来 */
     private inProgressProxyGroup: string | undefined
     private inProgressProxyNode: string | undefined
+
+    /**
+     * 正在跑的那个账号的实时进度：超时被放弃时用来「尽量把已到账的分查出来」。
+     *
+     * 为什么需要：2026-11-19 的 alanyz 卡了 90 分钟被硬超时收掉，超时分支直接把
+     * initialPoints/finalPoints/collectedPoints 全写成 0，推送显示「0 → 0」，
+     * 但那个号其实已经实打实到账 +110（手机侧活动全做完了）。这既误导用户，
+     * 也把 RUN-END 的总分算少。这里的快照在超时那一刻尽力抢救真实余额。
+     */
+    private inProgressBalance = { initialPoints: 0, currentPoints: 0 }
+    private inProgressCookies: Cookie[] = []
+    private inProgressFingerprint: BrowserFingerprintWithHeaders | undefined
     private wxSummarySent = false
 
     public axios!: AxiosClient
@@ -436,6 +478,104 @@ export class MicrosoftRewardsBot {
         return safe * 60_000
     }
 
+    /**
+     * 账号被硬超时放弃后，尽量把「已经到账多少分」查出来。
+     *
+     * 背景（2026-11-19）：alanyz@njust.edu.cn 卡在桌面搜索上 90 分钟被放弃，
+     * 超时分支把三个分数字段全写 0，推送显示「0 → 0」；实际上这个号手机侧活动
+     * 全部到账、真实余额 7911 → 8021（+110），查漏补缺当天还读到 8021 起步。
+     *
+     * 做法：超时那一刻浏览器已经被关掉，但账号的 cookie 与指纹还在内存里，
+     * 所以直接用它们走一遍 API 查余额（不启动浏览器，十几秒就能出结果）。
+     * 查不到就退回本地累计值（初始分 + 已记账的得分），仍然不再写死 0。
+     */
+    private async salvageBalanceAfterTimeout(account: Account): Promise<{
+        initialPoints: number
+        finalPoints: number
+        collectedPoints: number
+        source: 'api' | 'local' | 'unknown'
+    }> {
+        const { initialPoints, currentPoints } = this.inProgressBalance
+        // 本进程内已经记账的得分（userData.gainedPoints 在每个活动入账时累加）
+        const localGained = Number(this.userData.gainedPoints ?? 0)
+        const localFinal = Math.max(currentPoints, initialPoints + localGained)
+
+        const fallback = {
+            initialPoints,
+            finalPoints: localFinal,
+            collectedPoints: Math.max(0, localFinal - initialPoints),
+            source: initialPoints > 0 ? ('local' as const) : ('unknown' as const)
+        }
+
+        // 没有登录态快照（比如卡在登录那一步）就没法查，直接退回本地值
+        if (!this.inProgressCookies.length) {
+            if (initialPoints > 0 || localGained > 0) {
+                this.logger.warn(
+                    'main',
+                    'TIMEOUT-SALVAGE',
+                    `超时账号 ${account.email} 没有可用的登录态快照，按本地累计记账：${initialPoints} → ${localFinal}（+${fallback.collectedPoints}）`
+                )
+            }
+            return fallback
+        }
+
+        this.logger.info(
+            'main',
+            'TIMEOUT-SALVAGE',
+            `超时账号 ${account.email} 正在用已保存的登录态查真实余额（浏览器已关闭，走 API）…`
+        )
+
+        try {
+            // 用独立的 axios 实例，避免污染本账号后续（已不会再跑）的 this.axios
+            const axiosClient = new AxiosClient(account.proxy)
+            const cookieHeader = this.browser.func.buildCookieHeader(this.inProgressCookies, ['bing.com'])
+
+            const response = await axiosClient.requestForProbe({
+                url: 'https://rewards.bing.com/api/getuserinfo?type=1',
+                method: 'GET',
+                timeout: 20000,
+                headers: {
+                    ...(this.inProgressFingerprint?.headers ?? {}),
+                    Cookie: cookieHeader,
+                    Referer: 'https://rewards.bing.com/',
+                    Origin: 'https://rewards.bing.com'
+                }
+            })
+
+            const availablePoints = response.data?.dashboard?.userStatus?.availablePoints
+            if (typeof availablePoints === 'number') {
+                const effectiveInitial = initialPoints > 0 ? initialPoints : Math.min(availablePoints, localFinal)
+                const collected = Math.max(0, availablePoints - effectiveInitial)
+                this.logger.info(
+                    'main',
+                    'TIMEOUT-SALVAGE',
+                    `超时账号 ${account.email} 真实余额 = ${availablePoints}（记账 ${effectiveInitial} → ${availablePoints}，+${collected}）`,
+                    'green'
+                )
+                return {
+                    initialPoints: effectiveInitial,
+                    finalPoints: availablePoints,
+                    collectedPoints: collected,
+                    source: 'api'
+                }
+            }
+
+            this.logger.warn(
+                'main',
+                'TIMEOUT-SALVAGE',
+                `超时账号 ${account.email} 的余额接口没有 availablePoints，按本地累计记账：${initialPoints} → ${localFinal}`
+            )
+            return fallback
+        } catch (error) {
+            this.logger.warn(
+                'main',
+                'TIMEOUT-SALVAGE',
+                `超时账号 ${account.email} 余额查询失败（${error instanceof Error ? error.message : String(error)}），按本地累计记账：${initialPoints} → ${localFinal}（+${fallback.collectedPoints}）`
+            )
+            return fallback
+        }
+    }
+
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
         const accountTimeoutMs = this.accountTimeoutMs()
@@ -468,6 +608,10 @@ export class MicrosoftRewardsBot {
             this.inProgressStartTime = accountStartTime
             this.inProgressProxyGroup = undefined
             this.inProgressProxyNode = undefined
+            // 超时抢救用：每个账号开跑前清空上一个号的余额/登录态快照
+            this.inProgressBalance = { initialPoints: 0, currentPoints: 0 }
+            this.inProgressCookies = []
+            this.inProgressFingerprint = undefined
 
             // 本账号实际使用的节点：切换成功后立刻记下，后面无论成功/失败/超时都带进推送
             let accountProxyGroup: string | undefined
@@ -533,14 +677,20 @@ export class MicrosoftRewardsBot {
                         `${accountEmail} 超过 ${timeoutMinutes} 分钟没有返回，放弃该账号并继续下一个（多半是 Playwright 调用挂死）| Duration: ${timeoutSeconds}s`
                     )
                     await this.browserFactory.closeAllBrowsers(`account timeout: ${accountEmail}`).catch(() => {})
+
+                    // 超时不等于 0 分：那个号可能已经把手机侧活动全做完了（2026-11-19 就 +110）。
+                    // 先尽力查一次真实余额，查不到才退回本地累计值，绝不写死 0。
+                    const salvaged = await this.salvageBalanceAfterTimeout(account)
+
                     accountStats.push({
                         email: accountEmail,
-                        initialPoints: 0,
-                        finalPoints: 0,
-                        collectedPoints: 0,
+                        initialPoints: salvaged.initialPoints,
+                        finalPoints: salvaged.finalPoints,
+                        collectedPoints: salvaged.collectedPoints,
                         duration: parseFloat(timeoutSeconds),
                         success: false,
-                        error: `timeout ${timeoutMinutes}min`,
+                        incomplete: true,
+                        error: `timeout ${timeoutMinutes}min${salvaged.source === 'local' ? '（余额未查到，用本地累计）' : ''}`,
                         proxyGroup: accountProxyGroup,
                         proxyNode: accountProxyNode
                     })
@@ -551,7 +701,9 @@ export class MicrosoftRewardsBot {
                     continue
                 }
 
-                const result: { initialPoints: number; collectedPoints: number } | undefined = raced
+                const result:
+                    | { initialPoints: number; collectedPoints: number; searchIncomplete?: boolean }
+                    | undefined = raced
 
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
 
@@ -559,6 +711,7 @@ export class MicrosoftRewardsBot {
                     const collectedPoints = result.collectedPoints ?? 0
                     const accountInitialPoints = result.initialPoints ?? 0
                     const accountFinalPoints = accountInitialPoints + collectedPoints
+                    const searchIncomplete = Boolean(result.searchIncomplete)
 
                     accountStats.push({
                         email: accountEmail,
@@ -567,6 +720,8 @@ export class MicrosoftRewardsBot {
                         collectedPoints: collectedPoints,
                         duration: parseFloat(durationSeconds),
                         success: true,
+                        // 跑完了但搜索分没拿满：外层在主任务后单独补跑这个号
+                        incomplete: searchIncomplete || undefined,
                         proxyGroup: accountProxyGroup,
                         proxyNode: accountProxyNode
                     })
@@ -574,15 +729,18 @@ export class MicrosoftRewardsBot {
                     this.logger.info(
                         'main',
                         'ACCOUNT-END',
-                        `Completed account: ${accountEmail} | Total: +${collectedPoints} | Old: ${accountInitialPoints} → New: ${accountFinalPoints} | Duration: ${durationSeconds}s`,
-                        'green'
+                        `Completed account: ${accountEmail} | Total: +${collectedPoints} | Old: ${accountInitialPoints} → New: ${accountFinalPoints} | Duration: ${durationSeconds}s${searchIncomplete ? ' | 搜索未满，待单独补跑' : ''}`,
+                        searchIncomplete ? 'yellow' : 'green'
                     )
                 } else {
+                    // 流程失败（Main 抛错被吞成 undefined）：同样不能记 0 ——
+                    // 已到账的手机侧活动分是实打实的（2026-11-17 / 11-19 同类事故）。
+                    const salvaged = await this.salvageBalanceAfterTimeout(account)
                     accountStats.push({
                         email: accountEmail,
-                        initialPoints: 0,
-                        finalPoints: 0,
-                        collectedPoints: 0,
+                        initialPoints: salvaged.initialPoints,
+                        finalPoints: salvaged.finalPoints,
+                        collectedPoints: salvaged.collectedPoints,
                         duration: parseFloat(durationSeconds),
                         success: false,
                         error: 'Flow failed',
@@ -598,11 +756,12 @@ export class MicrosoftRewardsBot {
                     `${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
                 )
 
+                const salvaged = await this.salvageBalanceAfterTimeout(account)
                 accountStats.push({
                     email: accountEmail,
-                    initialPoints: 0,
-                    finalPoints: 0,
-                    collectedPoints: 0,
+                    initialPoints: salvaged.initialPoints,
+                    finalPoints: salvaged.finalPoints,
+                    collectedPoints: salvaged.collectedPoints,
                     duration: parseFloat(durationSeconds),
                     success: false,
                     error: error instanceof Error ? error.message : String(error),
@@ -638,7 +797,13 @@ export class MicrosoftRewardsBot {
             if (this.config.webhook.wxpusher?.enabled) {
                 // 正常收尾即视为已推送，防止随后的 SIGTERM/beforeExit 再补发一次
                 this.wxSummarySent = true
-                sendWxPusherSummary(this.config.webhook.wxpusher, toAccountSummaries(accountStats))
+                // 单独补跑（.dev/rerun-failed.sh）时由外层统一推一张合并卡片，
+                // 这里的单号卡片只会造成「一天收好几条、还互相矛盾」的重复推送。
+                if (process.env.SUPPRESS_SUMMARY_PUSH === '1') {
+                    this.logger.info('main', 'WXPUSHER', `SUPPRESS_SUMMARY_PUSH=1，本次不推送（由外层合并推送）`)
+                } else {
+                    sendWxPusherSummary(this.config.webhook.wxpusher, toAccountSummaries(accountStats))
+                }
             }
 
             exportGithubOutput(accountStats, this.config.retryOnLowPoints)
@@ -706,7 +871,12 @@ export class MicrosoftRewardsBot {
         }
     }
 
-    async Main(account: Account): Promise<{ initialPoints: number; collectedPoints: number }> {
+    async Main(account: Account): Promise<{
+        initialPoints: number
+        collectedPoints: number
+        /** 搜索分没搜完（卡住/停滞放弃）：账号算「跑完但没拿满」，外层会挑它单独补跑 */
+        searchIncomplete?: boolean
+    }> {
         const accountEmail = account.email
         this.logger.info('main', 'FLOW', `Starting session for ${accountEmail}`)
 
@@ -737,6 +907,12 @@ export class MicrosoftRewardsBot {
                 this.cookies.mobile = initialCookies.cookies
                 this.fingerprint = mobileSession.fingerprint
 
+                // 超时抢救用的快照：登录态 + 指纹拿到后立刻留一份，
+                // 万一这个号卡在后面的 Playwright 调用上被硬超时收掉，
+                // 还能用这份 cookie 直接打 API 查真实余额（见 salvageBalanceAfterTimeout）。
+                this.inProgressCookies = initialCookies.cookies
+                this.inProgressFingerprint = mobileSession.fingerprint
+
                 const data: DashboardData = await this.browser.func.getDashboardData()
 
                 let appData: AppDashboardData | undefined
@@ -766,6 +942,8 @@ export class MicrosoftRewardsBot {
                 this.userData.initialPoints = data.userStatus.availablePoints
                 this.userData.currentPoints = data.userStatus.availablePoints
                 const initialPoints = this.userData.initialPoints ?? 0
+                // 超时抢救的兜底基线：这一刻的真实余额
+                this.inProgressBalance = { initialPoints, currentPoints: initialPoints }
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
 
@@ -836,6 +1014,36 @@ export class MicrosoftRewardsBot {
 
                 this.userData.gainedPoints = mobilePoints + desktopPoints
 
+                // 搜索到底搜满没有：再读一次计数器来判断，不靠「有没有抛错」猜。
+                // 2026-11-19 的 alanyz 就是卡在查不到分值上、最后 earned=0 却一路「成功」走到
+                // ACCOUNT-END，外层完全看不出这个号丢了 100 分搜索分。
+                let searchIncomplete = false
+                try {
+                    const afterMissing = this.browser.func.missingSearchPoints(
+                        await this.browser.func.getSearchPoints(),
+                        false
+                    )
+                    const stillMissing =
+                        (this.config.workers.doDesktopSearch
+                            ? afterMissing.desktopPoints + afterMissing.edgePoints
+                            : 0) + (this.config.workers.doMobileSearch ? afterMissing.mobilePoints : 0)
+
+                    if (stillMissing > 0) {
+                        searchIncomplete = true
+                        this.logger.warn(
+                            'main',
+                            'FLOW',
+                            `搜索没搜满：还差 ${stillMissing} 分（桌面 ${afterMissing.desktopPoints} / Edge ${afterMissing.edgePoints} / 手机 ${afterMissing.mobilePoints}）| 本账号将标记为「未拿满」，主任务后单独补跑 | ${accountEmail}`
+                        )
+                    }
+                } catch (error) {
+                    this.logger.debug(
+                        'main',
+                        'FLOW',
+                        `搜索缺口复核失败（不影响账号结果）：${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+
                 // 末尾记账同样受出网抖动影响（2026-11-17 就是这一行抛错把整号记成失败的）。
                 // 先用恢复兜底重试；预算内仍查不到时退回本地累计值，绝不把已到账的分记成 0。
                 let finalPoints: number
@@ -861,6 +1069,9 @@ export class MicrosoftRewardsBot {
                 }
                 const collectedPoints = finalPoints - initialPoints
 
+                // 终值也是超时抢救的兜底基线，留着给外层核对
+                this.inProgressBalance = { initialPoints, currentPoints: finalPoints }
+
                 this.logger.info(
                     'main',
                     'FLOW',
@@ -869,7 +1080,8 @@ export class MicrosoftRewardsBot {
 
                 return {
                     initialPoints,
-                    collectedPoints: collectedPoints || 0
+                    collectedPoints: collectedPoints || 0,
+                    searchIncomplete
                 }
             })
         } finally {

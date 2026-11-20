@@ -142,13 +142,25 @@ export function buildSummaryHtml(
 
     const accountRows = accounts
         .map(a => {
-            const label = a.incomplete ? '未完成' : a.success ? `+${a.collectedPoints}` : '失败'
-            const gainedColor = a.incomplete ? 'color:#f39c12;' : a.success ? 'color:#27ae60;' : 'color:#e74c3c;'
-            const emailColor = a.incomplete || !a.success ? 'color:#e74c3c;' : ''
-            const balance = a.incomplete && !a.initialPoints ? '—' : `${a.initialPoints} → ${a.finalPoints}`
+            // incomplete 有两种含义，卡片上必须区分开（2026-11-19 教训）：
+            //   1) 进程被中断、这个号根本没跑 → 没有余额数据，显示「未完成」
+            //   2) 跑了但失败/被超时收掉/搜索没拿满 → 分数是实打实的，必须显示真实得分
+            //      （那天 alanyz 卡了 90 分钟，手机侧 +110 全到账，卡片却显示 0 → 0）
+            const hasBalance = a.initialPoints > 0 || a.finalPoints > 0
+            const showPoints = a.success || hasBalance
+            const label = showPoints ? `+${a.collectedPoints}` : '未完成'
+            const gainedColor = !showPoints
+                ? 'color:#f39c12;'
+                : a.success
+                  ? 'color:#27ae60;'
+                  : 'color:#e67e22;' // 跑过但失败/超时：拿到多少照实显示，橙色提示有问题
+            const emailColor = !a.success || a.incomplete ? 'color:#e74c3c;' : ''
+            const balance = hasBalance ? `${a.initialPoints} → ${a.finalPoints}` : '—'
+            // 邮箱后面的小标签，让「有分数但需要补跑」一眼可辨
+            const tag = a.incomplete && hasBalance ? '（未拿满/超时，将单独补跑）' : a.incomplete ? '（未跑完）' : ''
             return `
         <tr>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;${emailColor}"><div>${a.email}</div>${nodeSubline(a)}</td>
+            <td style="padding:6px 10px;border-bottom:1px solid #eee;${emailColor}"><div>${a.email}${tag ? `<span style="font-size:11px;color:#e67e22;">${tag}</span>` : ''}</div>${nodeSubline(a)}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;${gainedColor}">${label}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${balance}</td>
             <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${(a.duration / 60).toFixed(1)}分</td>
@@ -186,7 +198,7 @@ export function buildSummaryHtml(
                 </div>
             </div>
             <div style="font-size:14px;color:#333;margin-bottom:12px;">
-                账号: <b>${accounts.length}</b> 个 | 成功: <b style="color:#27ae60;">${successCount}</b> | 失败: <b style="color:#e74c3c;">${failCount}</b>${incompleteCount ? ` | 未完成: <b style="color:#f39c12;">${incompleteCount}</b>` : ''}
+                账号: <b>${accounts.length}</b> 个 | 成功: <b style="color:#27ae60;">${successCount}</b> | 失败: <b style="color:#e74c3c;">${failCount}</b>${incompleteCount ? ` | 未完成/待补跑: <b style="color:#f39c12;">${incompleteCount}</b>` : ''}
             </div>
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
                 <thead>
