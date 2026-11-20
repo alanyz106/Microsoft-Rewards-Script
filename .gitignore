@@ -21,3 +21,13 @@ logs/
 memory/
 rules/
 AGENTS.md
+
+# 临时调试产物：截图、一次性脚本。随时可删，不进仓库，保持工作区干净。
+tmp/
+
+# 所有备份文件（config.json.bak-*、accounts.json.full.bak*、*.bak.<ts> 等）。
+# 这类文件由 .dev/ 下的脚本在改动前自动生成，属于本地恢复手段，不是源码。
+*.bak
+*.bak.*
+*.bak-*
+*.bak_*
