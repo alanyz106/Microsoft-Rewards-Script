@@ -20,6 +20,10 @@ import { Workers } from './functions/Workers'
 import Activities from './functions/Activities'
 import { SearchManager } from './functions/SearchManager'
 import { isTransientNetworkError, NetworkRecovery } from './functions/NetworkRecovery'
+import { diffTaskBreakdown, readTaskProgress } from './functions/TaskBreakdown'
+import type { TaskBreakdown, TaskProgressSnapshot } from './functions/TaskBreakdown'
+import { readMemberLevel } from './functions/MemberLevel'
+import type { MemberLevel } from './functions/MemberLevel'
 
 import type { Account } from './interface/Account'
 import AxiosClient from './util/Axios'
@@ -29,6 +33,7 @@ import { sendWxPusherSummary, flushWxPusherQueue } from './logging/WxPusher'
 import type { AccountSummary } from './logging/WxPusher'
 import type { DashboardData } from './interface/DashboardData'
 import type { AppDashboardData } from './interface/AppDashBoardData'
+import type { AppEarnablePoints } from './interface/Points'
 
 // 账号分组 → mihomo 出口节点。运行期 require .dev/ 模块，主任务与查漏补缺共用一份配置。
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -70,6 +75,10 @@ interface AccountStats {
     /** 本次运行该账号走的 mihomo 分组与出口节点（推送里展示，便于定位节点问题） */
     proxyGroup?: string
     proxyNode?: string
+    /** 按任务类型拆分（桌面搜索/手机搜索/每日任务/其他活动/App/待领取），推送卡片用 */
+    breakdown?: TaskBreakdown
+    /** 会员等级（铜/银/金），卡片里显示在节点右边 */
+    level?: MemberLevel
 }
 
 /**
@@ -138,7 +147,9 @@ function toAccountSummaries(stats: AccountStats[]): AccountSummary[] {
         error: s.error,
         incomplete: s.incomplete,
         proxyGroup: s.proxyGroup,
-        proxyNode: s.proxyNode
+        proxyNode: s.proxyNode,
+        breakdown: s.breakdown,
+        level: s.level
     }))
 }
 
@@ -702,7 +713,13 @@ export class MicrosoftRewardsBot {
                 }
 
                 const result:
-                    | { initialPoints: number; collectedPoints: number; searchIncomplete?: boolean }
+                    | {
+                          initialPoints: number
+                          collectedPoints: number
+                          searchIncomplete?: boolean
+                          breakdown?: TaskBreakdown
+                          level?: MemberLevel
+                      }
                     | undefined = raced
 
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
@@ -723,7 +740,9 @@ export class MicrosoftRewardsBot {
                         // 跑完了但搜索分没拿满：外层在主任务后单独补跑这个号
                         incomplete: searchIncomplete || undefined,
                         proxyGroup: accountProxyGroup,
-                        proxyNode: accountProxyNode
+                        proxyNode: accountProxyNode,
+                        breakdown: result.breakdown,
+                        level: result.level
                     })
 
                     this.logger.info(
@@ -876,6 +895,10 @@ export class MicrosoftRewardsBot {
         collectedPoints: number
         /** 搜索分没搜完（卡住/停滞放弃）：账号算「跑完但没拿满」，外层会挑它单独补跑 */
         searchIncomplete?: boolean
+        /** 按任务类型的积分拆分（推送卡片用），读数失败时为 undefined */
+        breakdown?: TaskBreakdown
+        /** 会员等级（铜/银/金），卡片里显示在节点右边；读不到时 undefined */
+        level?: MemberLevel
     }> {
         const accountEmail = account.email
         this.logger.info('main', 'FLOW', `Starting session for ${accountEmail}`)
@@ -971,6 +994,25 @@ export class MicrosoftRewardsBot {
                     } | App: ${appEarnable?.totalEarnablePoints ?? 0} | ${accountEmail} | locale: ${this.userData.geoLocale}`
                 )
 
+                // 按任务类型拆分的「开跑前」基准：这一刻每类任务还差多少分。
+                // 必须在任何活动开始前拍，之后收尾再拍一次，两者相减就是本次各类拿到多少。
+                const taskProgressBefore: TaskProgressSnapshot | undefined = readTaskProgress(
+                    data,
+                    appChannelAvailable ? appEarnable : undefined,
+                    this.utils.getFormattedDate()
+                )
+
+                // 会员等级（铜/银/金）：开跑时的 dashboard 里就有，不用额外请求。
+                // 按 key 映射而非名称——名称会随账号语言变成 "Gold Member" / "金級會員"。
+                const memberLevel = readMemberLevel(data)
+                if (memberLevel) {
+                    this.logger.info(
+                        'main',
+                        'MEMBER-LEVEL',
+                        `会员等级=${memberLevel} | activeLevel=${data.userStatus.levelInfo?.activeLevel} | ${accountEmail}`
+                    )
+                }
+
                 // Ensure streak protection is true if enabled
                 if (this.config.ensureStreakProtection) {
                     await this.browser.func.ensureStreakProtection()
@@ -1017,12 +1059,13 @@ export class MicrosoftRewardsBot {
                 // 搜索到底搜满没有：再读一次计数器来判断，不靠「有没有抛错」猜。
                 // 2026-11-19 的 alanyz 就是卡在查不到分值上、最后 earned=0 却一路「成功」走到
                 // ACCOUNT-END，外层完全看不出这个号丢了 100 分搜索分。
+                //
+                // 同一次仪表盘数据顺便拍「收尾快照」，供推送里的任务细分相减（少一次请求）。
                 let searchIncomplete = false
+                let taskProgressAfter: TaskProgressSnapshot | undefined
                 try {
-                    const afterMissing = this.browser.func.missingSearchPoints(
-                        await this.browser.func.getSearchPoints(),
-                        false
-                    )
+                    const finalDashboard = await this.browser.func.getDashboardData()
+                    const afterMissing = this.browser.func.missingSearchPoints(finalDashboard.userStatus.counters, false)
                     const stillMissing =
                         (this.config.workers.doDesktopSearch
                             ? afterMissing.desktopPoints + afterMissing.edgePoints
@@ -1036,6 +1079,22 @@ export class MicrosoftRewardsBot {
                             `搜索没搜满：还差 ${stillMissing} 分（桌面 ${afterMissing.desktopPoints} / Edge ${afterMissing.edgePoints} / 手机 ${afterMissing.mobilePoints}）| 本账号将标记为「未拿满」，主任务后单独补跑 | ${accountEmail}`
                         )
                     }
+
+                    // App 端剩余可得分也要重读一次，否则「App 签到/阅读」这一行永远算不出拿到多少；
+                    // 读不到就让它缺键，卡片显示「差N?」而不是谎报 0。
+                    let appAfter: AppEarnablePoints | undefined
+                    if (appChannelAvailable) {
+                        try {
+                            appAfter = await this.browser.func.getAppEarnablePoints()
+                        } catch (error) {
+                            this.logger.debug(
+                                'main',
+                                'FLOW',
+                                `App 进度复核失败（细分里该行标为未知）：${error instanceof Error ? error.message : String(error)}`
+                            )
+                        }
+                    }
+                    taskProgressAfter = readTaskProgress(finalDashboard, appAfter, this.utils.getFormattedDate())
                 } catch (error) {
                     this.logger.debug(
                         'main',
@@ -1069,6 +1128,18 @@ export class MicrosoftRewardsBot {
                 }
                 const collectedPoints = finalPoints - initialPoints
 
+                // 任务细分：前后两次「还差多少」相减，得到各类拿到的分与仍缺的部分。
+                // 这行是 JSON：外层（.dev/rerun-failed.sh）补跑后要靠它把细分带进合并卡片，
+                // 光靠人读的可读文本没法可靠解析。
+                const breakdown = diffTaskBreakdown(taskProgressBefore, taskProgressAfter)
+                if (breakdown) {
+                    this.logger.info(
+                        'main',
+                        'TASK-BREAKDOWN',
+                        JSON.stringify({ email: accountEmail, slices: breakdown })
+                    )
+                }
+
                 // 终值也是超时抢救的兜底基线，留着给外层核对
                 this.inProgressBalance = { initialPoints, currentPoints: finalPoints }
 
@@ -1081,7 +1152,9 @@ export class MicrosoftRewardsBot {
                 return {
                     initialPoints,
                     collectedPoints: collectedPoints || 0,
-                    searchIncomplete
+                    searchIncomplete,
+                    breakdown,
+                    level: memberLevel
                 }
             })
         } finally {

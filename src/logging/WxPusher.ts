@@ -1,6 +1,9 @@
 import axios, { AxiosRequestConfig } from 'axios'
 import PQueue from 'p-queue'
 import type { WebhookWxPusherConfig } from '../interface/Config'
+import type { TaskBreakdown, TaskSlice } from '../functions/TaskBreakdown'
+import { memberBadgeHtml } from '../functions/MemberLevel'
+import type { MemberLevel } from '../functions/MemberLevel'
 
 const WXPUSHER_API = 'https://wxpusher.zjiecode.com/api/send/message'
 
@@ -23,6 +26,10 @@ export interface AccountSummary {
     /** 本次运行该账号走的 mihomo 分组与出口节点（卡片里显示在邮箱下方） */
     proxyGroup?: string
     proxyNode?: string
+    /** 按任务类型拆分（桌面搜索/手机搜索/每日任务/其他活动/App/待领取），旧调用方不传则不显示 */
+    breakdown?: TaskBreakdown
+    /** 会员等级（铜/银/金），显示在节点信息右边；不传则不显示 */
+    level?: MemberLevel
 }
 
 export interface SummaryOptions {
@@ -103,14 +110,58 @@ function shortNodeName(node?: string): string | undefined {
     return short || node
 }
 
-/** 邮箱下方的节点小字：`美国1 · 🇺🇲 美国Y01`；没有节点信息就不占位置 */
+/** 邮箱下方的节点小字：`美国1 · 🇺🇲 美国Y01 [金牌]`；没有节点信息就只显示等级 */
 function nodeSubline(account: AccountSummary): string {
     const node = shortNodeName(account.proxyNode)
-    if (!node) return ''
     const group = account.proxyGroup?.trim()
-    const text = group ? `${group} · ${node}` : node
-    return `<div style="font-size:11px;color:#8a94a6;margin-top:2px;font-weight:normal;">${text}</div>`
+    const text = node ? (group ? `${group} · ${node}` : node) : ''
+    const badge = memberBadgeHtml(account.level)
+    // 耗时从表格列挪到这里：明细占了宽度，「耗时」单独占一列太浪费
+    const took = `<span style="color:#adb5bd;">· ${(account.duration / 60).toFixed(1)}分</span>`
+    // 等级徽章排在节点右边；节点和等级都没有时仍要显示耗时
+    if (!text && !badge) return `<div style="font-size:11px;margin-top:2px;font-weight:normal;white-space:nowrap;">${took}</div>`
+    // white-space:nowrap 保证「节点 + 等级」不会被挤成两行
+    return `<div style="font-size:11px;color:#8a94a6;margin-top:2px;font-weight:normal;white-space:nowrap;">${text}${badge} ${took}</div>`
 }
+
+/**
+ * 账号行下方的「各类型得分」明细：每个账号自己一项一行，列出**每一类拿了多少分**。
+ *
+ * 为什么明细放在账号下面而不是卡片顶部做合计：
+ *   用户要看的是「这个号今天哪块没做完」，合计只告诉他「全体还差多少」，
+ *   既不能定位到号，也不能据此决定去补哪个号——所以顶部不再做汇总表。
+ *
+ * 展示规则：
+ *   - 拿满的：绿色 `桌面搜索 +100 ✓`
+ *   - 没拿满的：橙色 `桌面搜索 +50 差50`
+ *   - 读不到收尾进度（超时/接口失败）：`桌面搜索 差100?`，问号表示这是开跑前的缺口而不是实测
+ * 用 2 列小表格排列，比一行长文本更容易扫读，也不容易在手机窄屏上折行错乱。
+ */
+function breakdownBlock(account: AccountSummary): string {
+    const slices = account.breakdown
+    if (!slices?.length) return ''
+
+    /** 单类的单元格：拿满绿色带 ✓，没拿满橙色带缺口 */
+    const cell = (s: TaskSlice): string => {
+        if (s.remaining <= 0) {
+            return `<td style="padding:1px 8px 1px 0;font-size:11px;white-space:nowrap;color:#27ae60;">${s.label} <b>+${s.earned}</b> ✓</td>`
+        }
+        // known=false：收尾没读到，remaining 是开跑前的缺口，标「?」不装作是实测
+        const gap = `差${s.remaining}${s.known ? '' : '?'}`
+        return `<td style="padding:1px 8px 1px 0;font-size:11px;white-space:nowrap;color:#e67e22;">${s.label} <b>+${s.earned}</b> ${gap}</td>`
+    }
+
+    // 每 2 项一行：11 个账号 × 最多 6 类，横排一行会撑爆手机宽度
+    const perRow = 2
+    const rows: string[] = []
+    for (let i = 0; i < slices.length; i += perRow) {
+        rows.push(`<tr>${slices.slice(i, i + perRow).map(cell).join('')}</tr>`)
+    }
+
+    return `<table style="border-collapse:collapse;margin-top:3px;">${rows.join('')}</table>`
+}
+
+
 
 export async function sendWxPusherSummary(
     config: WebhookWxPusherConfig,
@@ -160,10 +211,9 @@ export function buildSummaryHtml(
             const tag = a.incomplete && hasBalance ? '（未拿满/超时，将单独补跑）' : a.incomplete ? '（未跑完）' : ''
             return `
         <tr>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;${emailColor}"><div>${a.email}${tag ? `<span style="font-size:11px;color:#e67e22;">${tag}</span>` : ''}</div>${nodeSubline(a)}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;${gainedColor}">${label}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${balance}</td>
-            <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:center;">${(a.duration / 60).toFixed(1)}分</td>
+            <td style="padding:6px 8px;border-bottom:1px solid #eee;${emailColor}"><div>${a.email}${tag ? `<span style="font-size:11px;color:#e67e22;">${tag}</span>` : ''}</div>${nodeSubline(a)}${breakdownBlock(a)}</td>
+            <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap;${gainedColor}">${label}</td>
+            <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap;font-size:12px;">${balance}</td>
         </tr>`
         })
         .join('')
@@ -203,10 +253,9 @@ export function buildSummaryHtml(
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
                 <thead>
                     <tr style="background:#f8f9fa;">
-                        <th style="padding:8px 10px;text-align:left;border-bottom:2px solid #dee2e6;">账号</th>
-                        <th style="padding:8px 10px;text-align:center;border-bottom:2px solid #dee2e6;">获得</th>
-                        <th style="padding:8px 10px;text-align:center;border-bottom:2px solid #dee2e6;">点数变化</th>
-                        <th style="padding:8px 10px;text-align:center;border-bottom:2px solid #dee2e6;">耗时</th>
+                        <th style="padding:8px 8px;text-align:left;border-bottom:2px solid #dee2e6;">账号</th>
+                        <th style="padding:8px 4px;text-align:center;border-bottom:2px solid #dee2e6;white-space:nowrap;width:48px;">获得</th>
+                        <th style="padding:8px 4px;text-align:center;border-bottom:2px solid #dee2e6;white-space:nowrap;width:96px;">点数变化</th>
                     </tr>
                 </thead>
                 <tbody>
