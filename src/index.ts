@@ -996,10 +996,11 @@ export class MicrosoftRewardsBot {
 
                 // 按任务类型拆分的「开跑前」基准：这一刻每类任务还差多少分。
                 // 必须在任何活动开始前拍，之后收尾再拍一次，两者相减就是本次各类拿到多少。
+                // 日期键交给 readTaskProgress 内部按「奖励市场本地日期」判定；
+                // 别再传 this.utils.getFormattedDate()（那是服务器本地日期，美国区账号会错一天）
                 const taskProgressBefore: TaskProgressSnapshot | undefined = readTaskProgress(
                     data,
-                    appChannelAvailable ? appEarnable : undefined,
-                    this.utils.getFormattedDate()
+                    appChannelAvailable ? appEarnable : undefined
                 )
 
                 // 会员等级（铜/银/金）：开跑时的 dashboard 里就有，不用额外请求。
@@ -1094,7 +1095,7 @@ export class MicrosoftRewardsBot {
                             )
                         }
                     }
-                    taskProgressAfter = readTaskProgress(finalDashboard, appAfter, this.utils.getFormattedDate())
+                    taskProgressAfter = readTaskProgress(finalDashboard, appAfter)
                 } catch (error) {
                     this.logger.debug(
                         'main',

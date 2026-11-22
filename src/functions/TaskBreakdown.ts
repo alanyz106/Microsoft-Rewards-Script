@@ -1,6 +1,7 @@
 import type { DashboardData } from '../interface/DashboardData'
 import type { AppEarnablePoints } from '../interface/Points'
 import { isEarnableOffer } from './OfferFilter'
+import { resolveDailySetKey } from './DailySetBatch'
 
 /**
  * 「按任务类型」的积分拆分（推送卡片用）
@@ -85,12 +86,14 @@ function sumMissing(list: ProgressLike[] | undefined): number {
  *
  * @param data      dashboard 数据（读不到就传 undefined，表示整份未知）
  * @param app       App 端剩余可得分（App 通道不可用时传 undefined，这一类按未知处理）
- * @param todayKey  今天在 dailySetPromotions 里的键，形如 `11/20/2026`
+ * @param todayKey  今天该做的那批在 dailySetPromotions 里的键，形如 `11/20/2026`。
+ *                  传 undefined 时由 resolveDailySetKey(data) 自动判定（按奖励市场日期），
+ *                  避免调用方各自用服务器本地日期拼错批次。
  */
 export function readTaskProgress(
     data: DashboardData | undefined,
     app: AppEarnablePoints | undefined,
-    todayKey: string
+    todayKey?: string
 ): TaskProgressSnapshot | undefined {
     if (!data) return undefined
 
@@ -101,9 +104,10 @@ export function readTaskProgress(
     if (counters?.pcSearch) snapshot.desktopSearch = sumMissing(counters.pcSearch)
     if (counters?.mobileSearch) snapshot.mobileSearch = sumMissing(counters.mobileSearch)
 
-    // 每日任务（Daily Set）：接口同时给今天和明天的键，只认今天
+    // 每日任务（Daily Set）：接口同时给今天和明天的键，只认「奖励市场今天」那一批
     if (data.dailySetPromotions) {
-        snapshot.dailySet = sumMissing(data.dailySetPromotions[todayKey])
+        const key = todayKey ?? resolveDailySetKey(data)
+        snapshot.dailySet = sumMissing(data.dailySetPromotions[key])
     }
 
     // 其他活动（quiz / urlreward）：与 getBrowserEarnablePoints 同一套过滤条件，

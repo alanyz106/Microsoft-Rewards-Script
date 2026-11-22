@@ -8,6 +8,7 @@ import type {
     PurplePromotionalItem
 } from '../interface/DashboardData'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
+import { resolveDailySetKey } from './DailySetBatch'
 
 export class Workers {
     public bot: MicrosoftRewardsBot
@@ -17,7 +18,11 @@ export class Workers {
     }
 
     public async doDailySet(data: DashboardData, page: Page) {
-        const todayKey = this.bot.utils.getFormattedDate()
+        // 不能用 getFormattedDate()（服务器本地日期，这里是中国时区）：Rewards 的 Daily Set
+        // 批次按**奖励市场**本地日期划分。美国区账号在北京时间 00:00–16:00 之间，
+        // 市场日期还停在前一天，用北京日期拼键会去提交「明天那批」——
+        // 服务端返回 code:0 + p:0（200、不报错、不标重复，纯粹不给分），静默丢分。
+        const todayKey = resolveDailySetKey(data)
         const todayData = data.dailySetPromotions[todayKey]
 
         const activitiesUncompleted = todayData?.filter(x => !x?.complete && x.pointProgressMax > 0) ?? []

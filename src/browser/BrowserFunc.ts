@@ -4,6 +4,7 @@ import type { AxiosRequestConfig } from 'axios'
 import type { MicrosoftRewardsBot } from '../index'
 import { saveSessionData } from '../util/Load'
 import { isEarnableOffer } from '../functions/OfferFilter'
+import { resolveDailySetKey } from '../functions/DailySetBatch'
 
 import type { Counters, DashboardData } from './../interface/DashboardData'
 import type { AppUserData } from '../interface/AppUserData'
@@ -251,7 +252,8 @@ export default class BrowserFunc {
                     0
                 ) ?? 0
 
-            const todayDate = this.bot.utils.getFormattedDate()
+            // 用「奖励市场本地日期」对应的批次，而不是服务器本地日期（见 DailySetBatch 注释）
+            const todayDate = resolveDailySetKey(data)
             const dailySetPoints =
                 data.dailySetPromotions[todayDate]?.reduce(
                     (sum, x) => sum + (x.pointProgressMax - x.pointProgress),
