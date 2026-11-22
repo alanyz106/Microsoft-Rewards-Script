@@ -3,6 +3,7 @@ import type { AxiosRequestConfig } from 'axios'
 
 import type { MicrosoftRewardsBot } from '../index'
 import { saveSessionData } from '../util/Load'
+import { isEarnableOffer } from '../functions/OfferFilter'
 
 import type { Counters, DashboardData } from './../interface/DashboardData'
 import type { AppUserData } from '../interface/AppUserData'
@@ -261,7 +262,9 @@ export default class BrowserFunc {
                 data.morePromotions?.reduce((sum, x) => {
                     if (
                         ['quiz', 'urlreward'].includes(x.promotionType) &&
-                        x.exclusiveLockedFeatureStatus !== 'locked'
+                        x.exclusiveLockedFeatureStatus !== 'locked' &&
+                        // 与推送卡片共用同一套「能不能拿到分」判定，两张口径不能各说各话
+                        isEarnableOffer(x.offerId, x.title)
                     ) {
                         return sum + (x.pointProgressMax - x.pointProgress)
                     }

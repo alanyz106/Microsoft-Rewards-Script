@@ -1,5 +1,6 @@
 import type { DashboardData } from '../interface/DashboardData'
 import type { AppEarnablePoints } from '../interface/Points'
+import { isEarnableOffer } from './OfferFilter'
 
 /**
  * 「按任务类型」的积分拆分（推送卡片用）
@@ -107,6 +108,8 @@ export function readTaskProgress(
 
     // 其他活动（quiz / urlreward）：与 getBrowserEarnablePoints 同一套过滤条件，
     // 否则卡片上的「今天还有多少分」会和日志里的 Earnable today 对不上。
+    // 另外剔掉「结构上拿不到分」的家族（exploreonbing / Bing App 500 / Edge 引导…），
+    // 否则「还差 605」里有 600 分是永远填不上的，卡片等于在虚报缺口。
     const seen = new Set<string>()
     let promoMissing = 0
     for (const p of [...(data.morePromotions ?? []), ...(data.morePromotionsWithoutPromotionalItems ?? [])]) {
@@ -118,6 +121,7 @@ export function readTaskProgress(
         }
         if (!['quiz', 'urlreward'].includes(String(p.promotionType ?? ''))) continue
         if (p.exclusiveLockedFeatureStatus === 'locked') continue
+        if (!isEarnableOffer(p.offerId, p.title)) continue
         promoMissing += Math.max(0, Number(p.pointProgressMax ?? 0) - Number(p.pointProgress ?? 0))
     }
     snapshot.morePromotions = promoMissing
