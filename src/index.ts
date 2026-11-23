@@ -14,6 +14,7 @@ import { IpcLog, Logger } from './logging/Logger'
 import Utils from './util/Utils'
 import { loadAccounts, loadConfig } from './util/Load'
 import { checkNodeVersion } from './util/Validator'
+import { createShutdownHandler, runShutdownStep } from './util/Shutdown'
 
 import { Login } from './browser/auth/Login'
 import { Workers } from './functions/Workers'
@@ -357,14 +358,22 @@ export class MicrosoftRewardsBot {
                     'green'
                 )
 
-                if (this.config.webhook.wxpusher?.enabled) {
-                    sendWxPusherSummary(this.config.webhook.wxpusher, toAccountSummaries(allAccountStats))
+                const wxSummaryWorker = this.config.webhook.wxpusher
+                if (wxSummaryWorker?.enabled) {
+                    // 与单进程收尾一致：显式等推送落地再退出（详见下方单进程分支的注释）
+                    const outcome = await runShutdownStep(
+                        'WxPusher 汇总推送',
+                        20_000,
+                        () => sendWxPusherSummary(wxSummaryWorker, toAccountSummaries(allAccountStats)),
+                        (msg: string) => this.logger.warn('main', 'WXPUSHER', msg)
+                    )
+                    this.logger.info('main', 'WXPUSHER', `汇总推送结果: ${outcome}`)
                 }
 
                 exportGithubOutput(allAccountStats, this.config.retryOnLowPoints)
                 this.logLowPointAccounts(allAccountStats)
 
-                await flushAllWebhooks()
+                await flushAllWebhooks(15_000)
 
                 process.exit(hadWorkerFailure ? 1 : 0)
             }
@@ -474,18 +483,22 @@ export class MicrosoftRewardsBot {
     }
 
     /**
-     * 单账号硬超时（毫秒）。默认 90 分钟，可用环境变量 ACCOUNT_TIMEOUT_MINUTES 覆盖
-     * （systemd 里就写 Environment=ACCOUNT_TIMEOUT_MINUTES=90，改完 daemon-reload）。
+     * 单账号硬超时（毫秒）。默认 60 分钟，可用环境变量 ACCOUNT_TIMEOUT_MINUTES 覆盖
+     * （systemd 里就写 Environment=ACCOUNT_TIMEOUT_MINUTES=60，改完 daemon-reload）。
      *
      * 为什么必须有：2026-11-13 事故里，账号 2368652476 的 desktop「Bing 会话校验」
      * 卡在一个永不返回的 Playwright 调用上，而账号循环是裸的 `for … await Main()`
-     * （没有任何超时），于是整个串行任务陪着空转 5h27m，直到 systemd 的 10h 上限
+     * （没有任何超时），于是整个串行任务陪着空转 5h27m，直到 systemd 的上限
      * 把整个任务杀掉，后面 3 个账号当天一次都没跑（详见 memory/run.md）。
-     * 正常账号 35–50 分钟，90 分钟留了约 2 倍余量。
+     *
+     * 为什么 90 → 60（2026-11-23）：10 个号串行时 90min × 10 = 15h，本来就不符合
+     * 「总要有个硬天花板」的初衷。当天两个号各白等 90 分钟，直接把第 10 个号挤到
+     * systemd 的 10h 上限之外。正常账号 35–50 分钟，60 分钟仍有 1.2–1.7 倍余量，
+     * 10 号最坏 10h，能装进 12h 预算（TimeoutStartSec=43200）。
      */
     private accountTimeoutMs(): number {
-        const minutes = Number(process.env.ACCOUNT_TIMEOUT_MINUTES ?? '90')
-        const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 90
+        const minutes = Number(process.env.ACCOUNT_TIMEOUT_MINUTES ?? '60')
+        const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 60
         return safe * 60_000
     }
 
@@ -813,7 +826,8 @@ export class MicrosoftRewardsBot {
                 'green'
             )
 
-            if (this.config.webhook.wxpusher?.enabled) {
+            const wxSummary = this.config.webhook.wxpusher
+            if (wxSummary?.enabled) {
                 // 正常收尾即视为已推送，防止随后的 SIGTERM/beforeExit 再补发一次
                 this.wxSummarySent = true
                 // 单独补跑（.dev/rerun-failed.sh）时由外层统一推一张合并卡片，
@@ -821,14 +835,24 @@ export class MicrosoftRewardsBot {
                 if (process.env.SUPPRESS_SUMMARY_PUSH === '1') {
                     this.logger.info('main', 'WXPUSHER', `SUPPRESS_SUMMARY_PUSH=1，本次不推送（由外层合并推送）`)
                 } else {
-                    sendWxPusherSummary(this.config.webhook.wxpusher, toAccountSummaries(accountStats))
+                    // 2026-11-23：这里原来是「不 await，直接靠 flushAllWebhooks() 冲队列」，
+                    // 而 flushAllWebhooks 的上限只有 5s —— 推送慢一点（节点抖动、WxPusher 慢）
+                    // 就会在 process.exit(0) 时被丢掉，日志里连一行 [WxPusher] 都不留。
+                    // 现在显式 await 到 HTTP 真正返回（内部 10s axios 超时兜底），并记录结果。
+                    const outcome = await runShutdownStep(
+                        'WxPusher 汇总推送',
+                        20_000,
+                        () => sendWxPusherSummary(wxSummary, toAccountSummaries(accountStats)),
+                        (msg: string) => this.logger.warn('main', 'WXPUSHER', msg)
+                    )
+                    this.logger.info('main', 'WXPUSHER', `汇总推送结果: ${outcome}`)
                 }
             }
 
             exportGithubOutput(accountStats, this.config.retryOnLowPoints)
             this.logLowPointAccounts(accountStats)
 
-            await flushAllWebhooks()
+            await flushAllWebhooks(15_000)
             process.exit(0)
         }
 
@@ -1177,32 +1201,35 @@ async function main(): Promise<void> {
     checkNodeVersion()
     const rewardsBot = new MicrosoftRewardsBot()
 
+    /**
+     * 统一的收尾流程：补发一次「部分完成」汇总 → 冲掉 webhook 队列 → 退出。
+     * 具体实现与「只跑一次」的守卫在 `util/Shutdown.ts`（那里可单测，见该文件注释）。
+     *
+     * 2026-11-23 主任务卡片丢失的修复要点：
+     *   1. 收尾**只跑一次**：systemd 在 TimeoutStartSec 到点后会补发信号，旧实现里
+     *      第二个 SIGTERM 会立刻 `process.exit(143)`，把第一个信号里正在飞的推送掐断。
+     *   2. 每步都有硬上限（25s + 10s = 35s），配合 unit 里的 `TimeoutStopSec=60`，
+     *      保证不会被 SIGKILL 掉、日志里一定留下推送结果。
+     */
+    const shutdown = createShutdownHandler({
+        pushSummary: () => rewardsBot.pushSummaryOnInterrupt(),
+        flushQueues: () => flushAllWebhooks(),
+        log: (msg: string) => rewardsBot.logger.warn('main', 'PROCESS', msg),
+        exit: (code: number) => process.exit(code)
+    })
+
     process.on('beforeExit', () => {
         void flushAllWebhooks()
     })
-    process.on('SIGINT', async () => {
-        rewardsBot.logger.warn('main', 'PROCESS', 'SIGINT received, flushing and exiting...')
-        await rewardsBot.pushSummaryOnInterrupt()
-        await flushAllWebhooks()
-        process.exit(130)
+    process.on('SIGINT', () => void shutdown('SIGINT', 130))
+    process.on('SIGTERM', () => void shutdown('SIGTERM', 143))
+    process.on('uncaughtException', (error: unknown) => {
+        rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error as Error)
+        void shutdown('UNCAUGHT-EXCEPTION', 1)
     })
-    process.on('SIGTERM', async () => {
-        rewardsBot.logger.warn('main', 'PROCESS', 'SIGTERM received, flushing and exiting...')
-        await rewardsBot.pushSummaryOnInterrupt()
-        await flushAllWebhooks()
-        process.exit(143)
-    })
-    process.on('uncaughtException', async error => {
-        rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
-        await rewardsBot.pushSummaryOnInterrupt()
-        await flushAllWebhooks()
-        process.exit(1)
-    })
-    process.on('unhandledRejection', async reason => {
+    process.on('unhandledRejection', (reason: unknown) => {
         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
-        await rewardsBot.pushSummaryOnInterrupt()
-        await flushAllWebhooks()
-        process.exit(1)
+        void shutdown('UNHANDLED-REJECTION', 1)
     })
 
     try {
