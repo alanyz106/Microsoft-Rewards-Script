@@ -486,6 +486,12 @@ export class MicrosoftRewardsBot {
      * 单账号硬超时（毫秒）。默认 60 分钟，可用环境变量 ACCOUNT_TIMEOUT_MINUTES 覆盖
      * （systemd 里就写 Environment=ACCOUNT_TIMEOUT_MINUTES=60，改完 daemon-reload）。
      *
+     * 0 / 负数 / 非数字之外的第二个特例：设为 `0` 表示**禁用**（试运行/单账号补跑用）。
+     * 为什么需要禁用：新号首跑必然多一次邮箱验证码或 2FA 人工环节（等待时间不可控），
+     * 2026-11-23 试运行 miucocoty@foxmail.com 时手机侧阅读任务跑到 60 分钟被硬掐，
+     * 桌面侧整段没跑，session 不完整。试运行本来就只跑一个号、外面还有 systemd 与
+     * 编排脚本的锁，不需要「别饿死后面账号」那层保护，所以按需关掉更合理。
+     *
      * 为什么必须有：2026-11-13 事故里，账号 2368652476 的 desktop「Bing 会话校验」
      * 卡在一个永不返回的 Playwright 调用上，而账号循环是裸的 `for … await Main()`
      * （没有任何超时），于是整个串行任务陪着空转 5h27m，直到 systemd 的上限
@@ -497,7 +503,10 @@ export class MicrosoftRewardsBot {
      * 10 号最坏 10h，能装进 12h 预算（TimeoutStartSec=43200）。
      */
     private accountTimeoutMs(): number {
-        const minutes = Number(process.env.ACCOUNT_TIMEOUT_MINUTES ?? '60')
+        const raw = (process.env.ACCOUNT_TIMEOUT_MINUTES ?? '60').trim()
+        // 显式写 0 = 禁用单账号硬超时（试运行 / 单账号补跑）
+        if (raw === '0') return 0
+        const minutes = Number(raw)
         const safe = Number.isFinite(minutes) && minutes > 0 ? minutes : 60
         return safe * 60_000
     }
@@ -603,12 +612,21 @@ export class MicrosoftRewardsBot {
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
         const accountTimeoutMs = this.accountTimeoutMs()
+        const accountTimeoutDisabled = accountTimeoutMs <= 0
         this.logger.info('main', 'NETWORK-JITTER', this.networkRecovery.describe())
-        this.logger.info(
-            'main',
-            'RUN-TIMEOUT',
-            `单账号硬超时: ${Number((accountTimeoutMs / 60000).toFixed(1))} 分钟（超时放弃该账号、关掉它的浏览器，继续下一个）`
-        )
+        if (accountTimeoutDisabled) {
+            this.logger.warn(
+                'main',
+                'RUN-TIMEOUT',
+                '单账号硬超时: 已禁用（ACCOUNT_TIMEOUT_MINUTES=0，试运行/单账号补跑模式，不会主动掐断账号）'
+            )
+        } else {
+            this.logger.info(
+                'main',
+                'RUN-TIMEOUT',
+                `单账号硬超时: ${Number((accountTimeoutMs / 60000).toFixed(1))} 分钟（超时放弃该账号、关掉它的浏览器，继续下一个）`
+            )
+        }
         // 分组模式：记下开跑前的全局节点，全部跑完后还原，避免人工补跑/试运行
         // 把 mihomo 的面板选中节点永久改掉（单账号补跑尤其容易留下意外状态）。
         let originalNode: string | undefined
@@ -675,19 +693,23 @@ export class MicrosoftRewardsBot {
 
                 const ACCOUNT_TIMEOUT = Symbol('account-timeout')
                 let timeoutHandle: NodeJS.Timeout | undefined
-                const raced = await Promise.race([
-                    this.Main(account).catch(error => {
-                        void this.logger.error(
-                            true,
-                            'FLOW',
-                            `Mobile flow failed for ${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
-                        )
-                        return undefined
-                    }),
-                    new Promise<typeof ACCOUNT_TIMEOUT>(resolve => {
-                        timeoutHandle = setTimeout(() => resolve(ACCOUNT_TIMEOUT), accountTimeoutMs)
-                    })
-                ])
+                const mobileFlow = this.Main(account).catch(error => {
+                    void this.logger.error(
+                        true,
+                        'FLOW',
+                        `Mobile flow failed for ${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
+                    )
+                    return undefined
+                })
+                // 超时被禁用时不要挂 setTimeout(0)——那会立刻判定超时；直接等 Main 跑完
+                const raced = accountTimeoutDisabled
+                    ? await mobileFlow
+                    : await Promise.race([
+                          mobileFlow,
+                          new Promise<typeof ACCOUNT_TIMEOUT>(resolve => {
+                              timeoutHandle = setTimeout(() => resolve(ACCOUNT_TIMEOUT), accountTimeoutMs)
+                          })
+                      ])
                 if (timeoutHandle) clearTimeout(timeoutHandle)
 
                 // 超时：放弃这个账号，关掉它留下的浏览器，继续下一个 ——
