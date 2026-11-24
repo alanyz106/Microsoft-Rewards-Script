@@ -31,3 +31,8 @@ tmp/
 *.bak.*
 *.bak-*
 *.bak_*
+
+# ===== 两台机器源码同步专用 =====
+# 本机(阿里云)与 rewards(186.241.81.51) 共用同一个 GitHub 仓库。
+# .dev/ memory/ AGENTS.md 本来就被忽略，但它们必须跨机一致，
+# 所以单独用 .dev/sync-both-ways.sh 走 rsync 同步，不走 git。

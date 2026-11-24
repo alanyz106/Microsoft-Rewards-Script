@@ -24,6 +24,7 @@ import { isTransientNetworkError, NetworkRecovery } from './functions/NetworkRec
 import { diffTaskBreakdown, readTaskProgress } from './functions/TaskBreakdown'
 import type { TaskBreakdown, TaskProgressSnapshot } from './functions/TaskBreakdown'
 import { readMemberLevel } from './functions/MemberLevel'
+import { getOrSetDayBaseline } from './util/PointsBaseline'
 import type { MemberLevel } from './functions/MemberLevel'
 
 import type { Account } from './interface/Account'
@@ -220,6 +221,15 @@ export class MicrosoftRewardsBot {
      * 也把 RUN-END 的总分算少。这里的快照在超时那一刻尽力抢救真实余额。
      */
     private inProgressBalance = { initialPoints: 0, currentPoints: 0 }
+
+    /**
+     * 运行数据目录（data/）。积分日基线、锁文件都放这里，跨进程/跨重启持久。
+     * 编译后 __dirname 是 <repo>/dist，其上一级即仓库根。
+     */
+    private dataDir(): string {
+        // __dirname 在编译后是 <repo>/dist，上一层就是仓库根
+        return process.env.REWARDS_DATA_DIR || require('path').join(__dirname, '..', 'data')
+    }
     private inProgressCookies: Cookie[] = []
     private inProgressFingerprint: BrowserFingerprintWithHeaders | undefined
     private wxSummarySent = false
@@ -1010,9 +1020,22 @@ export class MicrosoftRewardsBot {
 
                 this.userData.initialPoints = data.userStatus.availablePoints
                 this.userData.currentPoints = data.userStatus.availablePoints
-                const initialPoints = this.userData.initialPoints ?? 0
-                // 超时抢救的兜底基线：这一刻的真实余额
-                this.inProgressBalance = { initialPoints, currentPoints: initialPoints }
+                // 本次运行开跑时的余额（只用于日志/本地累计兜底）
+                const runStartPoints = this.userData.initialPoints ?? 0
+                // 记账起点用「当天基线」而不是「本次开跑余额」：
+                //   同一天里一个号可能被跑多次（服务被杀后自动重启、补跑、查漏补缺），
+                //   每次都从「本次开跑余额」起算的话，前面几轮挣的分会被算进起点而消失
+                //   （2026-11-24：第一轮挣 1260 分，第二轮从 19578 起算只记 +80）。
+                const initialPoints = getOrSetDayBaseline(this.dataDir(), accountEmail, runStartPoints)
+                if (initialPoints !== runStartPoints) {
+                    this.logger.info(
+                        'main',
+                        'POINTS-BASELINE',
+                        `当天基线 ${initialPoints}（本次开跑 ${runStartPoints}，已累计 +${Math.max(0, runStartPoints - initialPoints)}）| ${accountEmail}`
+                    )
+                }
+                // 超时抢救的兜底基线：起点同样是当天基线，保证与最终账单口径一致
+                this.inProgressBalance = { initialPoints, currentPoints: runStartPoints }
 
                 const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
 
@@ -1162,7 +1185,7 @@ export class MicrosoftRewardsBot {
 
                     const localPoints = Math.max(
                         Number(this.userData.currentPoints ?? 0),
-                        initialPoints + Number(this.userData.gainedPoints ?? 0)
+                        runStartPoints + Number(this.userData.gainedPoints ?? 0)
                     )
                     this.logger.warn(
                         'main',
