@@ -619,6 +619,35 @@ export class MicrosoftRewardsBot {
         }
     }
 
+    /**
+     * 输出一行**机器可读**的账号终态结果，供外层脚本（.dev/rerun-failed.sh、
+     * .dev/build-summary.js）可靠解析。
+     *
+     * 为什么需要（2026-11-25）：ACCOUNT-END 只在「正常收尾」时打，超时 / Flow failed /
+     * ACCOUNT-ERROR 三条路径都不打它。而补跑恰恰最常走这三条路径，于是解析器匹配不到
+     * `Completed account:` 就退回写死全 0，合并账单取 `max(主任务, 补跑)` 时 0 永远被吞，
+     * 卡片上补跑成绩恒等于主任务那一行（2026-11-25 三个号 +10/+77/+109 全丢）。
+     *
+     * 这里不改变 ACCOUNT-END 的「成功」语义（它在别处被当作成功标志），
+     * 只额外补一条与终态无关、带真实分数的记录行。
+     */
+    private logAccountResult(stat: AccountStats): void {
+        this.logger.info(
+            'main',
+            'ACCOUNT-RESULT',
+            JSON.stringify({
+                email: stat.email,
+                initialPoints: stat.initialPoints,
+                finalPoints: stat.finalPoints,
+                collectedPoints: stat.collectedPoints,
+                duration: stat.duration,
+                success: stat.success,
+                incomplete: stat.incomplete ?? false,
+                error: stat.error ?? null
+            })
+        )
+    }
+
     private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
         const accountStats: AccountStats[] = []
         const accountTimeoutMs = this.accountTimeoutMs()
@@ -738,7 +767,7 @@ export class MicrosoftRewardsBot {
                     // 先尽力查一次真实余额，查不到才退回本地累计值，绝不写死 0。
                     const salvaged = await this.salvageBalanceAfterTimeout(account)
 
-                    accountStats.push({
+                    const timeoutStat: AccountStats = {
                         email: accountEmail,
                         initialPoints: salvaged.initialPoints,
                         finalPoints: salvaged.finalPoints,
@@ -749,7 +778,10 @@ export class MicrosoftRewardsBot {
                         error: `timeout ${timeoutMinutes}min${salvaged.source === 'local' ? '（余额未查到，用本地累计）' : ''}`,
                         proxyGroup: accountProxyGroup,
                         proxyNode: accountProxyNode
-                    })
+                    }
+                    accountStats.push(timeoutStat)
+                    // 超时分支不会走到 ACCOUNT-END，补一条机器可读结果，否则外层补跑解析不到分数
+                    this.logAccountResult(timeoutStat)
                     this.completedStats = [...accountStats]
                     this.inProgressEmail = null
                     this.inProgressProxyGroup = undefined
@@ -775,7 +807,7 @@ export class MicrosoftRewardsBot {
                     const accountFinalPoints = accountInitialPoints + collectedPoints
                     const searchIncomplete = Boolean(result.searchIncomplete)
 
-                    accountStats.push({
+                    const successStat: AccountStats = {
                         email: accountEmail,
                         initialPoints: accountInitialPoints,
                         finalPoints: accountFinalPoints,
@@ -788,7 +820,8 @@ export class MicrosoftRewardsBot {
                         proxyNode: accountProxyNode,
                         breakdown: result.breakdown,
                         level: result.level
-                    })
+                    }
+                    accountStats.push(successStat)
 
                     this.logger.info(
                         'main',
@@ -796,11 +829,13 @@ export class MicrosoftRewardsBot {
                         `Completed account: ${accountEmail} | Total: +${collectedPoints} | Old: ${accountInitialPoints} → New: ${accountFinalPoints} | Duration: ${durationSeconds}s${searchIncomplete ? ' | 搜索未满，待单独补跑' : ''}`,
                         searchIncomplete ? 'yellow' : 'green'
                     )
+                    // 四条终态统一都有一条机器可读结果行（ACCOUNT-END 保持「成功」语义不变）
+                    this.logAccountResult(successStat)
                 } else {
                     // 流程失败（Main 抛错被吞成 undefined）：同样不能记 0 ——
                     // 已到账的手机侧活动分是实打实的（2026-11-17 / 11-19 同类事故）。
                     const salvaged = await this.salvageBalanceAfterTimeout(account)
-                    accountStats.push({
+                    const flowFailedStat: AccountStats = {
                         email: accountEmail,
                         initialPoints: salvaged.initialPoints,
                         finalPoints: salvaged.finalPoints,
@@ -810,7 +845,10 @@ export class MicrosoftRewardsBot {
                         error: 'Flow failed',
                         proxyGroup: accountProxyGroup,
                         proxyNode: accountProxyNode
-                    })
+                    }
+                    accountStats.push(flowFailedStat)
+                    // 同上：失败分支没有 ACCOUNT-END，补一条机器可读结果
+                    this.logAccountResult(flowFailedStat)
                 }
             } catch (error) {
                 const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
@@ -821,7 +859,7 @@ export class MicrosoftRewardsBot {
                 )
 
                 const salvaged = await this.salvageBalanceAfterTimeout(account)
-                accountStats.push({
+                const errorStat: AccountStats = {
                     email: accountEmail,
                     initialPoints: salvaged.initialPoints,
                     finalPoints: salvaged.finalPoints,
@@ -831,7 +869,10 @@ export class MicrosoftRewardsBot {
                     error: error instanceof Error ? error.message : String(error),
                     proxyGroup: accountProxyGroup,
                     proxyNode: accountProxyNode
-                })
+                }
+                accountStats.push(errorStat)
+                // 同上：异常分支没有 ACCOUNT-END，补一条机器可读结果
+                this.logAccountResult(errorStat)
             }
 
             // 该账号已出结果（成功或失败），快照进中断兜底列表，并清空“正在跑”标记
