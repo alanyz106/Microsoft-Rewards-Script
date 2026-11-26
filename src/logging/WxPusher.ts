@@ -118,8 +118,9 @@ function nodeSubline(account: AccountSummary): string {
     const badge = memberBadgeHtml(account.level)
     // 耗时从表格列挪到这里：明细占了宽度，「耗时」单独占一列太浪费
     const took = `<span style="color:#adb5bd;">· ${(account.duration / 60).toFixed(1)}分</span>`
-    // 等级徽章排在节点右边；节点和等级都没有时仍要显示耗时
-    if (!text && !badge) return `<div style="font-size:11px;margin-top:2px;font-weight:normal;white-space:nowrap;">${took}</div>`
+    // 等级徽章排在节点右边；节点和等级都没有时仍要显示耗时（不带前面的「·」，否则行首挂个孤零零的点）
+    if (!text && !badge)
+        return `<div style="font-size:11px;color:#8a94a6;margin-top:2px;font-weight:normal;white-space:nowrap;">${(account.duration / 60).toFixed(1)}分</div>`
     // white-space:nowrap 保证「节点 + 等级」不会被挤成两行
     return `<div style="font-size:11px;color:#8a94a6;margin-top:2px;font-weight:normal;white-space:nowrap;">${text}${badge} ${took}</div>`
 }
@@ -209,11 +210,20 @@ export function buildSummaryHtml(
             const balance = hasBalance ? `${a.initialPoints} → ${a.finalPoints}` : '—'
             // 邮箱后面的小标签，让「有分数但需要补跑」一眼可辨
             const tag = a.incomplete && hasBalance ? '（未拿满/超时，将单独补跑）' : a.incomplete ? '（未跑完）' : ''
+            // 获得 / 点数变化原来各占一列，手机上竖屏三列挤得看不全（2026-11-26 改）：
+            // 改成竖排在账号块末尾，一个号从上往下读完就是完整信息。
+            // 没有余额（没跑完）时不摆「—」占位，只显示「获得 未完成」。
+            const pointsLine = `<div style="margin-top:3px;font-size:13px;white-space:nowrap;"><span style="${gainedColor}font-weight:bold;">获得 ${label}</span>${
+                hasBalance ? `<span style="color:#ced4da;"> · </span><span style="color:#333;">点数 ${balance}</span>` : ''
+            }</div>`
             return `
         <tr>
-            <td style="padding:6px 8px;border-bottom:1px solid #eee;${emailColor}"><div>${a.email}${tag ? `<span style="font-size:11px;color:#e67e22;">${tag}</span>` : ''}</div>${nodeSubline(a)}${breakdownBlock(a)}</td>
-            <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap;${gainedColor}">${label}</td>
-            <td style="padding:6px 4px;border-bottom:1px solid #eee;text-align:center;white-space:nowrap;font-size:12px;">${balance}</td>
+            <td style="padding:8px 2px;border-bottom:1px solid #eee;">
+                <div style="${emailColor}">${a.email}${tag ? `<span style="font-size:11px;color:#e67e22;">${tag}</span>` : ''}</div>
+                ${nodeSubline(a)}
+                ${breakdownBlock(a)}
+                ${pointsLine}
+            </td>
         </tr>`
         })
         .join('')
@@ -253,9 +263,7 @@ export function buildSummaryHtml(
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
                 <thead>
                     <tr style="background:#f8f9fa;">
-                        <th style="padding:8px 8px;text-align:left;border-bottom:2px solid #dee2e6;">账号</th>
-                        <th style="padding:8px 4px;text-align:center;border-bottom:2px solid #dee2e6;white-space:nowrap;width:48px;">获得</th>
-                        <th style="padding:8px 4px;text-align:center;border-bottom:2px solid #dee2e6;white-space:nowrap;width:96px;">点数变化</th>
+                        <th style="padding:8px 2px;text-align:left;border-bottom:2px solid #dee2e6;">账号明细</th>
                     </tr>
                 </thead>
                 <tbody>
